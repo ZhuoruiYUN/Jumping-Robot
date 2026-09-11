@@ -1094,6 +1094,7 @@ def run_autonomous_flight():
     last_pwm_height_log = np.zeros(4, dtype=np.float32)
     last_pwm_spread_yaw_log = np.zeros(4, dtype=np.float32)
     last_pwm_final_log = np.zeros(4, dtype=np.float32)
+    last_policy_vel_w_log = np.zeros(3, dtype=np.float32)
     policy_obs_valid = 0
     policy_update_this_frame = 0
 
@@ -1116,6 +1117,7 @@ def run_autonomous_flight():
         last_pwm_height_log.fill(0.0)
         last_pwm_spread_yaw_log.fill(0.0)
         last_pwm_final_log.fill(0.0)
+        last_policy_vel_w_log.fill(0.0)
         previous_contact = True
         cycle_active = False
         needs_new_plan = True
@@ -1417,6 +1419,7 @@ def run_autonomous_flight():
                 if PPO_USE_DELAYED_IMU:
                     policy_gyro_b = fusion_gyro_b
                 pos_w = policy_pos_w
+                last_policy_vel_w_log[:] = policy_vel_w
 
                 # ==== 防炸机保护：只在 JUMP 模式生效，避免手持 ARM 阶段误触发 ====
                 tilt_rad = body_tilt_rad(latest_pure_q)
@@ -1524,7 +1527,11 @@ def run_autonomous_flight():
 
                         if is_contact > 0.5:
                             joint_pos = np.array([max(0.0, REST_LEG_LENGTH - pos_w[2])])
-                            joint_vel = np.array([-kf_vz])  # 质心向下运动对应着弹簧阻尼压缩
+                            # Keep the spring phase consistent with the velocity in
+                            # the policy observation.  The EKF commonly misses the
+                            # touchdown impulse and can retain a descending velocity
+                            # during rebound; using it here reverses the spring phase.
+                            joint_vel = np.array([-float(policy_vel_w[2])])
                         else:
                             joint_pos = np.array([0.0])
                             joint_vel = np.array([0.0])
@@ -1715,6 +1722,7 @@ def run_autonomous_flight():
                               time.perf_counter() - start_time, dt,
                               pos_w[0], pos_w[1], pos_w[2],
                               kf_vx, kf_vy, kf_vz,
+                              *last_policy_vel_w_log.tolist(),
                               current_target_x, current_target_y, TARGET_Z,
                               m1, m2, m3, m4,
                               policy_obs_valid, policy_update_this_frame,
@@ -1802,7 +1810,8 @@ def run_autonomous_flight():
         pwm_final_headers = [f'PWM_FinalFloat_m{i}' for i in range(1, 5)]
 
         headers = [
-                      'Time_s', 'loop_dt', 'X', 'Y', 'Z', 'Vel_X', 'Vel_Y', 'Vel_Z',
+                      'Time_s', 'loop_dt', 'X', 'Y', 'Z', 'EKF_Vel_X', 'EKF_Vel_Y', 'EKF_Vel_Z',
+                      'Policy_Vel_X', 'Policy_Vel_Y', 'Policy_Vel_Z',
                       'Target_X', 'Target_Y', 'Target_Z', 'M1', 'M2', 'M3', 'M4',
                       'Policy_Obs_Valid', 'Policy_Update_This_Frame',
                   ] + obs_headers + action_headers + pwm_raw_headers + pwm_height_headers + \
