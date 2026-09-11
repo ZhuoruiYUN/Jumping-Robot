@@ -70,7 +70,10 @@ TOUCHDOWN_TILT_ABORT_DEG = 15.0
 DEPLOY_ACTION_SCALE = 1.0
 DEPLOY_DIFFERENTIAL_SCALE = 1.0  # 已关闭（差动缩放被实飞证伪）
 MAX_PWM_SPREAD = 600.0
-MAX_PWM_STEP_PER_POLICY_UPDATE = 180.0
+# The physical motor/ESC already supplies the identified 67.4 ms response.
+# A second software slew limiter is absent from training and delays recovery
+# from a touchdown disturbance, so preserve the policy's commanded timing.
+MAX_PWM_STEP_PER_POLICY_UPDATE = 0.0
 HEIGHT_BRAKE_START_M = 0.03
 HEIGHT_BRAKE_FULL_M = 0.23
 HEIGHT_BRAKE_VZ_MIN = 0.05
@@ -78,12 +81,6 @@ HEIGHT_BRAKE_PWM_MEAN_SOFT = 720.0
 HEIGHT_BRAKE_PWM_MEAN_HARD = 520.0
 SOFT_TILT_BAD_TICKS_LIMIT = 3
 HARD_TILT_BAD_TICKS_LIMIT = 2
-AIRBORNE_TILT_SPREAD_START_DEG = 18.0
-AIRBORNE_TILT_SPREAD_FULL_DEG = 35.0
-AIRBORNE_TILT_MIN_PWM_SPREAD = 340.0
-AIRBORNE_XY_SPREAD_START_M = 0.24
-AIRBORNE_XY_SPREAD_FULL_M = 0.45
-AIRBORNE_XY_MIN_PWM_SPREAD = 380.0
 MAX_AIRBORNE_YAW_DIAGONAL_PWM_DIFF = 140.0
 MAX_GROUNDED_YAW_DIAGONAL_PWM_DIFF = 220.0
 # 松手下坠触发：手拿时 Vz≈0；真正松手后约 50-80 ms 内 Vz 会持续低于该阈值。
@@ -865,34 +862,10 @@ def limit_yaw_diagonal_pwm(pwm_cmd, is_contact):
 
 
 def adaptive_airborne_pwm_spread_limit(tilt_deg, xy_error_m, is_contact):
-    if is_contact > 0.5:
-        return MAX_PWM_SPREAD
-
-    limit = MAX_PWM_SPREAD
-    tilt_alpha = np.clip(
-        (tilt_deg - AIRBORNE_TILT_SPREAD_START_DEG)
-        / max(AIRBORNE_TILT_SPREAD_FULL_DEG - AIRBORNE_TILT_SPREAD_START_DEG, 1.0e-6),
-        0.0,
-        1.0,
-    )
-    limit = min(
-        limit,
-        (1.0 - tilt_alpha) * MAX_PWM_SPREAD
-        + tilt_alpha * AIRBORNE_TILT_MIN_PWM_SPREAD,
-    )
-
-    xy_alpha = np.clip(
-        (xy_error_m - AIRBORNE_XY_SPREAD_START_M)
-        / max(AIRBORNE_XY_SPREAD_FULL_M - AIRBORNE_XY_SPREAD_START_M, 1.0e-6),
-        0.0,
-        1.0,
-    )
-    limit = min(
-        limit,
-        (1.0 - xy_alpha) * MAX_PWM_SPREAD
-        + xy_alpha * AIRBORNE_XY_MIN_PWM_SPREAD,
-    )
-    return limit
+    # Large tilt or XY error is exactly when the direct-motor policy needs its
+    # full available recovery authority.  Keep the fixed physical cap while
+    # avoiding a state-dependent limit that was not present in training.
+    return MAX_PWM_SPREAD
 
 
 def limit_collective_for_height(pwm_cmd, pos_z, vel_z):
