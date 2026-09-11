@@ -39,7 +39,7 @@ parser.add_argument('--landing-error-penalty-scale', type=float,
 parser.add_argument('--landing-lateral-error-penalty-scale', type=float,
                     help='Override lateral touchdown-error penalty; unset preserves the default.')
 parser.add_argument('--robust-dynamics', action='store_true',
-                    help='Enable mass/inertia/motor-delay randomization for sim-to-real robustness.')
+                    help='Enable mass/inertia, delay, motor-response, and per-motor thrust randomization.')
 parser.add_argument('--observation-noise-std', type=float,
                     help='Override policy observation noise standard deviation.')
 parser.add_argument('--learning-rate', type=float, default=1e-5)
@@ -220,8 +220,18 @@ def main():
         if value is not None:
             setattr(cfg, name, value)
     if args.robust_dynamics:
+        # Real hops arrive with per-motor thrust, bandwidth, and timing
+        # differences.  Keep these ranges mild enough to retain the measured
+        # calibrated nominal plant in the curriculum centre, while ensuring a
+        # policy cannot rely on perfectly matched rotors.
         cfg.randomize_dynamics = True
         cfg.randomize_action_delay = True
+        cfg.randomize_motor_time_constant = True
+        cfg.randomize_thrust_curve = True
+        cfg.train_thrust_scale_min = 0.93
+        cfg.train_thrust_scale_max = 1.07
+        cfg.train_thrust_curve_shape_min = 0.96
+        cfg.train_thrust_curve_shape_max = 1.04
     if args.observation_noise_std is not None:
         cfg.observation_noise_std = args.observation_noise_std
     cfg.target_tolerance = args.target_tolerance
@@ -244,6 +254,10 @@ def main():
         landing_error_penalty=cfg.landing_error_penalty_scale,
         landing_lateral_error_penalty=cfg.landing_lateral_error_penalty_scale,
         robust_dynamics=cfg.randomize_dynamics,
+        randomize_motor_time_constant=cfg.randomize_motor_time_constant,
+        randomize_thrust_curve=cfg.randomize_thrust_curve,
+        thrust_scale_range=[cfg.train_thrust_scale_min, cfg.train_thrust_scale_max],
+        thrust_curve_shape_range=[cfg.train_thrust_curve_shape_min, cfg.train_thrust_curve_shape_max],
         observation_noise_std=cfg.observation_noise_std,
     )
     output.mkdir(parents=True)
