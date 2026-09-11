@@ -16,6 +16,9 @@ parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--max_steps", type=int, default=None)
 parser.add_argument("--target_tolerance", type=float, default=0.10)
+parser.add_argument("--short_radius_max", type=float, default=0.10)
+parser.add_argument("--long_radius_max", type=float, default=0.10)
+parser.add_argument("--max_turn_angle", type=float, default=15.0)
 parser.add_argument("--collective_scale", type=float, default=0.03)
 parser.add_argument("--attitude_scale", type=float, default=0.05)
 parser.add_argument("--residual_slew_rate", type=float, default=0.02)
@@ -53,19 +56,24 @@ def environment_cfg() -> PlannerRandomTwoHopEnvCfg:
     cfg.sim.device = args_cli.device
     cfg.seed = args_cli.seed
     cfg.debug_vis = not args_cli.no_debug_vis
-    cfg.force_full_planner = True
+    cfg.force_full_planner = False
+    cfg.planner_reference_blend = 0.0
+    cfg.stance_reference_uses_apex_height = True
     cfg.observation_noise_std = 0.0
     cfg.randomize_dynamics = False
     cfg.randomize_action_delay = False
     cfg.target_height = 1.0
+    cfg.start_from_random_drop = True
+    cfg.initial_drop_height_min = 1.42
+    cfg.initial_drop_height_max = 2.12
     cfg.alternate_target_heights = False
     cfg.fixed_height_curriculum = False
     cfg.symmetric_height_tracking = True
     cfg.require_apex_tolerance_for_hit = True
     cfg.relative_next_hop_observation = True
-    cfg.short_hop_radius_min, cfg.short_hop_radius_max = 0.50, 0.80
-    cfg.long_hop_radius_min, cfg.long_hop_radius_max = 0.80, 1.00
-    cfg.max_turn_angle_deg = 180.0
+    cfg.short_hop_radius_min, cfg.short_hop_radius_max = 0.0, args_cli.short_radius_max
+    cfg.long_hop_radius_min, cfg.long_hop_radius_max = 0.0, args_cli.long_radius_max
+    cfg.max_turn_angle_deg = args_cli.max_turn_angle
     cfg.target_tolerance = args_cli.target_tolerance
     cfg.planner_landing_xy_velocity_scale = 0.0
     cfg.anticipatory_velocity_blend = 0.0

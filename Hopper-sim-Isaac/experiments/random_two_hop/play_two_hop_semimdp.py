@@ -6,6 +6,7 @@ import argparse
 import math
 import os
 import sys
+import types
 from pathlib import Path
 
 from isaaclab.app import AppLauncher
@@ -38,6 +39,21 @@ parser.add_argument("--short_radius_min", type=float, default=0.50)
 parser.add_argument("--short_radius_max", type=float, default=0.80)
 parser.add_argument("--long_radius_min", type=float, default=0.80)
 parser.add_argument("--long_radius_max", type=float, default=1.00)
+parser.add_argument(
+    "--start_from_random_drop",
+    action="store_true",
+    help="Reset from the baseline-style high release before the first commanded hop.",
+)
+parser.add_argument("--initial_drop_height_min", type=float, default=0.8)
+parser.add_argument("--initial_drop_height_max", type=float, default=1.5)
+parser.add_argument(
+    "--route_override",
+    choices=("none", "stationary", "square"),
+    default="none",
+    help="Visualization-only waypoint route override.",
+)
+parser.add_argument("--square_side", type=float, default=0.45)
+parser.add_argument("--stationary_radius", type=float, default=0.0)
 parser.add_argument("--correction_mode", choices=("none", "descent", "landing"), default="landing")
 parser.add_argument("--landing_correction_height", type=float, default=0.20)
 parser.add_argument("--motor_correction_limit", type=float, default=0.014)
@@ -52,6 +68,8 @@ if not (0.0 < args.short_radius_min <= args.short_radius_max):
     parser.error("--short_radius_min/max must satisfy 0 < min <= max")
 if not (0.0 < args.long_radius_min <= args.long_radius_max):
     parser.error("--long_radius_min/max must satisfy 0 < min <= max")
+if not (0.0 <= args.initial_drop_height_min <= args.initial_drop_height_max):
+    parser.error("--initial_drop_height_min/max must satisfy 0 <= min <= max")
 def parse_action_offset(value: str | None, name: str) -> list[float] | None:
     if value is None:
         return None
@@ -148,6 +166,9 @@ def environment_cfg() -> PlannerRandomTwoHopEnvCfg:
     cfg.randomize_dynamics = False
     cfg.randomize_action_delay = False
     cfg.target_height = 1.0
+    cfg.start_from_random_drop = args.start_from_random_drop
+    cfg.initial_drop_height_min = args.initial_drop_height_min
+    cfg.initial_drop_height_max = args.initial_drop_height_max
     cfg.alternate_target_heights = False
     cfg.fixed_height_curriculum = False
     cfg.symmetric_height_tracking = True
@@ -189,6 +210,60 @@ def environment_cfg() -> PlannerRandomTwoHopEnvCfg:
     return cfg
 
 
+def install_route_override(core):
+    if args.route_override == "none":
+        return
+    commands = core.commands
+    if args.route_override == "stationary":
+        radius = float(args.stationary_radius)
+        route_offsets = torch.tensor(
+            [[radius, 0.0], [0.0, radius], [-radius, 0.0], [0.0, -radius]],
+            device=args.device,
+        )
+    else:
+        side = float(args.square_side)
+        if side <= 0.0:
+            parser.error("--square_side must be positive")
+        route_offsets = torch.tensor(
+            [[side, 0.0], [0.0, side], [-side, 0.0], [0.0, -side]],
+            device=args.device,
+        )
+
+    def set_queue(self, env_ids: torch.Tensor, anchor: torch.Tensor):
+        phase = self.route_index[env_ids] % len(route_offsets)
+        next_phase = (self.route_index[env_ids] + 1) % len(route_offsets)
+        first_offset = route_offsets[phase]
+        second_offset = route_offsets[next_phase]
+        self.anchor_w[env_ids] = anchor
+        self.targets_w[env_ids, 0] = anchor + first_offset
+        self.targets_w[env_ids, 1] = self.targets_w[env_ids, 0] + second_offset
+
+    def reset(self, env_ids: torch.Tensor, env_origins: torch.Tensor, random_phase: bool):
+        self.route_index[env_ids] = 0
+        self.cycle_index[env_ids] = 0
+        self.set_queue(env_ids, env_origins[env_ids, :2])
+
+    def advance(self, env_ids: torch.Tensor):
+        if len(env_ids) == 0:
+            return
+        anchor = self.targets_w[env_ids, 0].clone()
+        self.cycle_index[env_ids] += 1
+        self.route_index[env_ids] += 1
+        self.set_queue(env_ids, anchor)
+
+    def restart_pair(self, env_ids: torch.Tensor, current_xy_w: torch.Tensor):
+        if len(env_ids) == 0:
+            return
+        self.cycle_index[env_ids] += 1
+        self.route_index[env_ids] += 1
+        self.set_queue(env_ids, current_xy_w)
+
+    commands.set_queue = types.MethodType(set_queue, commands)
+    commands.reset = types.MethodType(reset, commands)
+    commands.advance = types.MethodType(advance, commands)
+    commands.restart_pair = types.MethodType(restart_pair, commands)
+
+
 def main():
     teacher_checkpoint = Path(args.teacher_checkpoint).expanduser().resolve()
     policy_checkpoint = Path(args.checkpoint).expanduser().resolve()
@@ -222,6 +297,8 @@ def main():
         state_reward_scale=args.state_reward_scale,
         expert_anchor_scale=0.0,
     )
+    core = base_env.unwrapped
+    install_route_override(core)
     model = HopActorCritic().to(args.device)
     data = torch.load(policy_checkpoint, map_location=args.device, weights_only=False)
     load_model_state_compat(model, data["model_state_dict"])
@@ -313,7 +390,6 @@ def main():
     with torch.no_grad():
         held = selected_mean(obs)
 
-    core = base_env.unwrapped
     p_t, p_t1 = core.commands.lookahead()
     first = torch.linalg.norm(p_t - core.commands.anchor_w, dim=1)
     second = torch.linalg.norm(p_t1 - p_t, dim=1)
@@ -340,6 +416,13 @@ def main():
             obs_dict, _, dones, _ = env.step(held)
             dones = dones.reshape(-1) > 0
             obs = obs_dict["policy"]
+            settled_drop = getattr(
+                core,
+                "_initial_drop_settled_event",
+                torch.zeros(args.num_envs, dtype=torch.bool, device=args.device),
+            )
+            if torch.any(settled_drop):
+                held[settled_drop] = selected_mean(obs[settled_drop])
             boundary = core._touchdown_event | dones
             if torch.any(boundary):
                 held[boundary] = selected_mean(obs[boundary])

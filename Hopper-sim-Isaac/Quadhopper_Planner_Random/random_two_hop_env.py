@@ -27,6 +27,16 @@ class PlannerRandomTwoHopEnvCfg(PlannerCircularEnvCfg):
     long_hop_radius_max = 1.00
     successful_hops_per_episode = 58
     max_turn_angle_deg = 180.0
+    # Optional two-interval sampler.  A zero probability keeps the historical
+    # uniform distribution exactly.  When enabled, each newly queued hop is
+    # sampled below/above the split using the configured hard probability.
+    hard_radius_split = 0.0
+    hard_radius_probability = 0.0
+    # Exact stationary hops. This is separate from the continuous radius
+    # range because a continuous distribution has zero probability at r=0.
+    zero_hop_probability = 0.0
+    reverse_turn_probability = 0.0
+    reverse_turn_halfwidth_deg = 30.0
     # A random route is a sequence of commanded landings, not a collection of
     # goals that may be retried indefinitely.  This makes every measured hit
     # rate a first-attempt hit rate and guarantees P_(t+1) becomes the next
@@ -47,6 +57,14 @@ class PlannerRandomTwoHopEnvCfg(PlannerCircularEnvCfg):
     # dozens of hops, so a step-based schedule would finish training before
     # the full 0.50--0.80 / 0.80--1.00 m range was ever commanded.
     curriculum_by_hops = False
+    # Long-hop recovery curriculum: keep the proven short distribution fixed,
+    # start long commands close to the phase boundary, and expand only the
+    # long distribution. Random route phase then exposes half of reset states
+    # directly to the long command instead of requiring a preceding short hop.
+    long_hop_curriculum = False
+    long_curriculum_radius_min = 0.30
+    long_curriculum_radius_max = 0.38
+    long_curriculum_max_turn_angle_deg = 30.0
 
 
 class PlannerRandomTwoHopEnv(PlannerCircularEnv):
@@ -78,6 +96,11 @@ class PlannerRandomTwoHopEnv(PlannerCircularEnv):
             self.cfg.long_hop_radius_max,
             self.cfg.successful_hops_per_episode,
             math.radians(self.cfg.max_turn_angle_deg),
+            self.cfg.hard_radius_split,
+            self.cfg.hard_radius_probability,
+            self.cfg.zero_hop_probability,
+            self.cfg.reverse_turn_probability,
+            math.radians(self.cfg.reverse_turn_halfwidth_deg),
         )
 
     def _sync_distance_curriculum(self):
@@ -101,6 +124,23 @@ class PlannerRandomTwoHopEnv(PlannerCircularEnv):
 
         def lerp(start: float, end: float) -> float:
             return start + blend * (end - start)
+
+        if self.cfg.long_hop_curriculum:
+            self.commands.short_radius_min = self.cfg.short_hop_radius_min
+            self.commands.short_radius_max = self.cfg.short_hop_radius_max
+            self.commands.long_radius_min = lerp(
+                self.cfg.long_curriculum_radius_min, self.cfg.long_hop_radius_min
+            )
+            self.commands.long_radius_max = lerp(
+                self.cfg.long_curriculum_radius_max, self.cfg.long_hop_radius_max
+            )
+            self.commands.max_turn_angle_rad = math.radians(
+                lerp(
+                    self.cfg.long_curriculum_max_turn_angle_deg,
+                    self.cfg.max_turn_angle_deg,
+                )
+            )
+            return
 
         self.commands.short_radius_min = lerp(
             self.cfg.curriculum_short_radius_min, self.cfg.short_hop_radius_min
@@ -144,7 +184,40 @@ class PlannerRandomTwoHopEnv(PlannerCircularEnv):
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         self._sync_distance_curriculum()
+        pair_diagnostics = {}
+        if env_ids is not None and hasattr(self, "_pair_attempts"):
+            pair_diagnostics = {
+                "pair_attempts_batch_count": self._pair_attempts[env_ids].sum().float(),
+                "pair_hits_batch_count": self._pair_hits[env_ids].sum().float(),
+                "conditional_second_attempts_batch_count": (
+                    self._conditional_second_attempts[env_ids].sum().float()
+                ),
+                "conditional_second_hits_batch_count": (
+                    self._conditional_second_hits[env_ids].sum().float()
+                ),
+            }
         super()._reset_idx(env_ids)
+        for name, value in pair_diagnostics.items():
+            self.extras["log"]["Diagnostics/" + name] = value
+        if hasattr(self, "commands"):
+            self.extras["log"]["Curriculum/long_radius_min_m"] = (
+                self.commands.long_radius_min
+            )
+            self.extras["log"]["Curriculum/long_radius_max_m"] = (
+                self.commands.long_radius_max
+            )
+            self.extras["log"]["Curriculum/max_turn_angle_deg"] = math.degrees(
+                self.commands.max_turn_angle_rad
+            )
+            self.extras["log"]["Curriculum/hard_radius_probability"] = (
+                self.commands.hard_radius_probability
+            )
+            self.extras["log"]["Curriculum/zero_hop_probability"] = (
+                self.commands.zero_hop_probability
+            )
+            self.extras["log"]["Curriculum/reverse_turn_probability"] = (
+                self.commands.reverse_turn_probability
+            )
         if env_ids is None or not hasattr(self, "_first_hop_hit_for_pair"):
             return
         self._first_hop_hit_for_pair[env_ids] = False

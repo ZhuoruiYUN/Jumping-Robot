@@ -25,6 +25,11 @@ class TwoHopRandomCommand:
         long_radius_max: float,
         successful_hops_per_episode: int,
         max_turn_angle_rad: float = math.pi,
+        hard_radius_split: float | None = None,
+        hard_radius_probability: float = 0.0,
+        zero_hop_probability: float = 0.0,
+        reverse_turn_probability: float = 0.0,
+        reverse_turn_halfwidth_rad: float = math.pi / 6.0,
     ):
         self._validate_range("short", short_radius_min, short_radius_max)
         self._validate_range("long", long_radius_min, long_radius_max)
@@ -40,6 +45,45 @@ class TwoHopRandomCommand:
         if not 0.0 < max_turn_angle_rad <= math.pi:
             raise ValueError("max_turn_angle_rad must be in (0, pi]")
         self.max_turn_angle_rad = float(max_turn_angle_rad)
+        if not 0.0 <= hard_radius_probability <= 1.0:
+            raise ValueError("hard_radius_probability must be in [0, 1]")
+        if hard_radius_probability > 0.0:
+            if hard_radius_split is None:
+                raise ValueError(
+                    "hard_radius_split is required when hard-radius sampling is enabled"
+                )
+            for name, lower, upper in (
+                ("short", short_radius_min, short_radius_max),
+                ("long", long_radius_min, long_radius_max),
+            ):
+                if not lower < hard_radius_split < upper:
+                    raise ValueError(
+                        f"hard_radius_split must be strictly inside the {name} "
+                        f"range [{lower}, {upper}]"
+                    )
+        self.hard_radius_split = (
+            None if hard_radius_split is None else float(hard_radius_split)
+        )
+        self.hard_radius_probability = float(hard_radius_probability)
+        if not 0.0 <= zero_hop_probability <= 1.0:
+            raise ValueError("zero_hop_probability must be in [0, 1]")
+        # A non-zero mass is required to train exact in-place hops.  Merely
+        # setting the continuous radius lower bound to zero samples values
+        # near zero, but never exactly zero in practice.
+        self.zero_hop_probability = float(zero_hop_probability)
+        if not 0.0 <= reverse_turn_probability <= 1.0:
+            raise ValueError("reverse_turn_probability must be in [0, 1]")
+        if not 0.0 < reverse_turn_halfwidth_rad <= math.pi:
+            raise ValueError("reverse_turn_halfwidth_rad must be in (0, pi]")
+        if (
+            reverse_turn_probability > 0.0
+            and max_turn_angle_rad < math.pi - reverse_turn_halfwidth_rad
+        ):
+            raise ValueError(
+                "max_turn_angle_rad must include the configured reverse-turn range"
+            )
+        self.reverse_turn_probability = float(reverse_turn_probability)
+        self.reverse_turn_halfwidth_rad = float(reverse_turn_halfwidth_rad)
         # Compatibility name consumed by the shared completion/reward logic.
         self.steps_per_revolution = int(successful_hops_per_episode)
 
@@ -53,17 +97,34 @@ class TwoHopRandomCommand:
 
     @staticmethod
     def _validate_range(name: str, lower: float, upper: float):
-        if lower <= 0.0 or upper < lower:
+        if lower < 0.0 or upper < lower:
             raise ValueError(
-                f"{name} hop radius must satisfy 0 < min <= max, got [{lower}, {upper}]"
+                f"{name} hop radius must satisfy 0 <= min <= max, got [{lower}, {upper}]"
             )
 
     def _sample_offset(
         self, count: int, radius_min: float, radius_max: float
     ) -> torch.Tensor:
-        radius = radius_min + (radius_max - radius_min) * torch.rand(
-            count, device=self.device
-        )
+        if self.hard_radius_probability > 0.0:
+            # The lower interval replays already learned hops while the upper
+            # interval receives most samples.  This is decided independently
+            # for every appended waypoint, including both alternating phases.
+            choose_hard = (
+                torch.rand(count, device=self.device)
+                < self.hard_radius_probability
+            )
+            unit = torch.rand(count, device=self.device)
+            split = self.hard_radius_split
+            replay_radius = radius_min + (split - radius_min) * unit
+            hard_radius = split + (radius_max - split) * unit
+            radius = torch.where(choose_hard, hard_radius, replay_radius)
+        else:
+            radius = radius_min + (radius_max - radius_min) * torch.rand(
+                count, device=self.device
+            )
+        if self.zero_hop_probability > 0.0:
+            is_zero_hop = torch.rand(count, device=self.device) < self.zero_hop_probability
+            radius = torch.where(is_zero_hop, torch.zeros_like(radius), radius)
         heading = 2.0 * math.pi * torch.rand(count, device=self.device)
         return radius[:, None] * torch.stack(
             (torch.cos(heading), torch.sin(heading)), dim=-1
@@ -94,6 +155,26 @@ class TwoHopRandomCommand:
         heading_delta = self.max_turn_angle_rad * (
             2.0 * torch.rand(len(is_short), device=self.device) - 1.0
         )
+        if self.reverse_turn_probability > 0.0:
+            # Keep the ordinary uniform distribution for broad coverage, but
+            # add a controllable point mass around +/- 180 deg. Uniform
+            # [-180, 180] otherwise makes near-reversal events too sparse for
+            # far-hop learning.
+            choose_reverse = (
+                torch.rand(len(is_short), device=self.device)
+                < self.reverse_turn_probability
+            )
+            reverse_magnitude = math.pi - self.reverse_turn_halfwidth_rad * torch.rand(
+                len(is_short), device=self.device
+            )
+            reverse_sign = torch.where(
+                torch.rand(len(is_short), device=self.device) < 0.5,
+                -torch.ones_like(reverse_magnitude),
+                torch.ones_like(reverse_magnitude),
+            )
+            heading_delta = torch.where(
+                choose_reverse, reverse_sign * reverse_magnitude, heading_delta
+            )
         heading = reference_heading + heading_delta
         return radii[:, None] * torch.stack(
             (torch.cos(heading), torch.sin(heading)), dim=-1
@@ -145,13 +226,21 @@ class TwoHopRandomCommand:
         self.targets_w[env_ids, 1] = self.targets_w[env_ids, 0] + offsets
 
     def restart_pair(self, env_ids: torch.Tensor, current_xy_w: torch.Tensor):
-        """Start a new short/long pair about the measured touchdown position."""
+        """Start a new short/long pair without an unconstrained boundary turn."""
         if len(env_ids) == 0:
             return
         first_is_short = torch.ones(
             len(env_ids), dtype=torch.bool, device=self.device
         )
-        first_offset = self._sample_phase_offsets(first_is_short)
+        # Before replacement, anchor -> targets[0] is the direction of the
+        # just-completed long hop. Constrain the new pair's first hop around
+        # that direction as well; the old independent sampling made every
+        # pair boundary an arbitrary 0--360 degree turn even when
+        # max_turn_angle_rad was small.
+        previous_offset = self.targets_w[env_ids, 0] - self.anchor_w[env_ids]
+        first_offset = self._sample_phase_offsets_around(
+            first_is_short, previous_offset
+        )
         second_offset = self._sample_phase_offsets_around(
             ~first_is_short, first_offset
         )

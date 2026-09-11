@@ -1,0 +1,268 @@
+{
+  "source_checkpoint": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/tracking_recovery/precision_zero40_08_12_turn30_nominal_v1/model_119.pt",
+  "checkpoint_iteration": 119,
+  "checkpoint_sha256": "2fd72dd57a43ef1e9f4d294c062900e7d87e9ae71d6fb5ad6edd388b2401c024",
+  "onnx_sha256": "624f1bd35bfc104b1320ba692fc181002b0a364ea5c17037c4f84615119d7f23",
+  "checkpoint_contract": {
+    "version": 11,
+    "protocol": "continuous_untimed_hard_replay_pair_precision_curriculum",
+    "source": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/tracking_recovery/precision_08_12_turn30_nominal_v1/model_119.pt",
+    "obs_dim": 52,
+    "actions": 4,
+    "preview": true,
+    "distance_range_m": [
+      0.08,
+      0.12
+    ],
+    "max_turn_angle_deg": 30.0,
+    "zero_hop_probability": 0.4,
+    "reverse_turn_probability": 0.0,
+    "reverse_turn_halfwidth_deg": 30.0,
+    "distance_sampling": {
+      "mode": "uniform",
+      "range_m": [
+        0.08,
+        0.12
+      ]
+    },
+    "target_tolerance_m": 0.05,
+    "waypoint_observation_scale_m": 0.2,
+    "path_corridor_m": 0.08,
+    "path_lookahead_m": 0.1,
+    "spatial_progress_reward_per_hop": 12.0,
+    "path_tracking_reward_per_second": 16.0,
+    "path_tracking_width_m": 0.08,
+    "xy_progress_form": "signed_distance_difference_m",
+    "xy_progress_gating": "same_target_consecutive_airborne_steps",
+    "two_hop_pair_definition": "second_phase_touchdown_and_two_consecutive_5cm_hits",
+    "target_hit_reward": 180.0,
+    "landing_precision_reward": 100.0,
+    "landing_error_penalty": -150.0,
+    "landing_lateral_error_penalty": -100.0,
+    "projected_landing_reward_per_second": 30.0,
+    "projected_landing_error_penalty_per_second": -30.0,
+    "stable_bonus_profile": {
+      "survival": 2.0,
+      "distance_to_z": 1.0,
+      "energy_tracking": 3.0,
+      "apex": 3.0
+    },
+    "path_penalty_max_per_second": 1.0,
+    "landing_hint_penalty_max_per_second": 0.0,
+    "target_hit_requires_minimum_apex": false,
+    "target_hit_requires_apex_tolerance": false,
+    "landing_precision_gated_by_apex": false,
+    "initial_drop_height_m": [
+      0.65,
+      1.05
+    ],
+    "guidance_clock": false,
+    "episode_length_s": 15.0,
+    "appended_observations": [
+      "carrot_error_body_xyz_m",
+      "path_tangent_body_xyz",
+      "landing_up_hint_body_xyz"
+    ],
+    "learning_rate": 1e-06,
+    "schedule": "fixed",
+    "std": 0.04,
+    "motor_tc_s": 0.0674,
+    "action_delay": "legacy_indexing_setting_0",
+    "seed": 42,
+    "xy_potential_progress_scale": 5.0,
+    "legacy_xy_progress_reward_scale": 0.0,
+    "two_hop_pair_reward": 30.0,
+    "landing_precision_width_m": 0.045,
+    "robust_dynamics": false,
+    "observation_noise_std": 0.0
+  },
+  "policy": "ActorCriticRecurrent/LSTM",
+  "control_frequency_hz": 100,
+  "inputs": {
+    "obs": [
+      1,
+      52
+    ],
+    "h_in": [
+      1,
+      1,
+      256
+    ],
+    "c_in": [
+      1,
+      1,
+      256
+    ]
+  },
+  "outputs": {
+    "actions": [
+      1,
+      4
+    ],
+    "h_out": [
+      1,
+      1,
+      256
+    ],
+    "c_out": [
+      1,
+      1,
+      256
+    ]
+  },
+  "normalization": "identity",
+  "motor_order": [
+    "F1",
+    "F2",
+    "F3",
+    "F4"
+  ],
+  "action_postprocess": "clip actions to [-1,1], then u=clip(0.5*action+0.5,0,1)",
+  "simulation_motor_time_constant_s": 0.0674,
+  "simulation_action_delay": "legacy setting 0; environment indexes action_history[-0], i.e. oldest of five slots after warm-up",
+  "policy_excludes": [
+    "state estimation",
+    "waypoint queue",
+    "untimed Hermite path and carrot construction",
+    "contact/apex event detection",
+    "motor delay and first-order lag",
+    "safety supervisor"
+  ],
+  "onnx_opset": 18,
+  "onnx_parity_max_abs_error": 1.1920928955078125e-07,
+  "observations": [
+    {
+      "slice": [
+        0,
+        3
+      ],
+      "name": "linear_velocity_body",
+      "frame": "body",
+      "units": "m/s"
+    },
+    {
+      "slice": [
+        3,
+        6
+      ],
+      "name": "angular_velocity_body",
+      "frame": "body",
+      "units": "rad/s"
+    },
+    {
+      "slice": [
+        6,
+        10
+      ],
+      "name": "root_quaternion_world",
+      "order": "wxyz"
+    },
+    {
+      "slice": [
+        10,
+        13
+      ],
+      "name": "active_landing_and_apex_error_body",
+      "frame": "body",
+      "units": "m"
+    },
+    {
+      "slice": [
+        13,
+        14
+      ],
+      "name": "root_height_world",
+      "units": "m"
+    },
+    {
+      "slice": [
+        14,
+        15
+      ],
+      "name": "spring_contact",
+      "definition": "spring_position > 0.002 m"
+    },
+    {
+      "slice": [
+        15,
+        16
+      ],
+      "name": "spring_position",
+      "units": "m"
+    },
+    {
+      "slice": [
+        16,
+        17
+      ],
+      "name": "spring_velocity",
+      "units": "m/s"
+    },
+    {
+      "slice": [
+        17,
+        37
+      ],
+      "name": "last_five_raw_policy_actions",
+      "layout": "oldest_to_newest, F1..F4"
+    },
+    {
+      "slice": [
+        37,
+        39
+      ],
+      "name": "current_landing_xy_error_body",
+      "scale": "divide by 0.20 m"
+    },
+    {
+      "slice": [
+        39,
+        41
+      ],
+      "name": "next_hop_displacement_body",
+      "scale": "divide by 0.20 m"
+    },
+    {
+      "slice": [
+        41,
+        42
+      ],
+      "name": "current_absolute_apex_command",
+      "scale": "divide by 2.0 m"
+    },
+    {
+      "slice": [
+        42,
+        43
+      ],
+      "name": "next_absolute_apex_command",
+      "scale": "divide by 2.0 m"
+    },
+    {
+      "slice": [
+        43,
+        46
+      ],
+      "name": "path_carrot_error_body",
+      "units": "m",
+      "clip": [
+        -1.0,
+        1.0
+      ]
+    },
+    {
+      "slice": [
+        46,
+        49
+      ],
+      "name": "path_unit_tangent_body"
+    },
+    {
+      "slice": [
+        49,
+        52
+      ],
+      "name": "next_hop_landing_up_hint_body"
+    }
+  ]
+}

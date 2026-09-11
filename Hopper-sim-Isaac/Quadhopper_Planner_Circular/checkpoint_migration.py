@@ -9,6 +9,7 @@ import torch
 OLD_OBS_DIM = 37
 LEGACY_PLANNER_OBS_DIM = 42
 NEW_OBS_DIM = 43
+PLANNER_VELOCITY_OBS_DIM = 47
 RECURRENT_INPUT_KEYS = ("memory_a.rnn.weight_ih_l0", "memory_c.rnn.weight_ih_l0")
 LEGACY_FIXED_HEIGHT_COMMAND = 1.30 / 2.0
 
@@ -25,16 +26,24 @@ def absolute_next_to_relative_state_dict(
     converted = deepcopy(state_dict)
     for key in RECURRENT_INPUT_KEYS:
         weight = converted[key]
-        if weight.shape[1] != NEW_OBS_DIM:
+        if weight.shape[1] not in (NEW_OBS_DIM, PLANNER_VELOCITY_OBS_DIM):
             raise ValueError(
-                f"{key} has observation width {weight.shape[1]}, expected {NEW_OBS_DIM}"
+                f"{key} has observation width {weight.shape[1]}, expected {NEW_OBS_DIM} or {PLANNER_VELOCITY_OBS_DIM}"
             )
         weight[:, 37:39] = weight[:, 37:39] + weight[:, 39:41]
     return converted
 
 
-def migrate_stable_checkpoint(source: str | Path, destination: str | Path) -> Path:
-    """Expand 37-D/42-D recurrent inputs to the 43-D height-horizon contract."""
+def migrate_stable_checkpoint(
+    source: str | Path,
+    destination: str | Path,
+    target_obs_dim: int = NEW_OBS_DIM,
+) -> Path:
+    """Expand recurrent inputs to the requested planner observation contract."""
+    if target_obs_dim not in (NEW_OBS_DIM, PLANNER_VELOCITY_OBS_DIM):
+        raise ValueError(
+            f"target_obs_dim must be {NEW_OBS_DIM} or {PLANNER_VELOCITY_OBS_DIM}"
+        )
     source = Path(source).expanduser().resolve()
     destination = Path(destination).expanduser().resolve()
     checkpoint = torch.load(source, map_location="cpu", weights_only=False)
@@ -42,13 +51,21 @@ def migrate_stable_checkpoint(source: str | Path, destination: str | Path) -> Pa
     migrated = False
     for key in RECURRENT_INPUT_KEYS:
         weight = state_dict[key]
-        if weight.shape[1] == NEW_OBS_DIM:
+        if weight.shape[1] == target_obs_dim:
             continue
-        if weight.shape[1] not in (OLD_OBS_DIM, LEGACY_PLANNER_OBS_DIM):
+        if weight.shape[1] not in (
+            OLD_OBS_DIM,
+            LEGACY_PLANNER_OBS_DIM,
+            NEW_OBS_DIM,
+        ):
             raise ValueError(
-                f"{key} has observation width {weight.shape[1]}, expected 37, 42 or 43"
+                f"{key} has observation width {weight.shape[1]}, expected 37, 42, 43 or {target_obs_dim}"
             )
-        expanded = torch.zeros(weight.shape[0], NEW_OBS_DIM, dtype=weight.dtype)
+        if weight.shape[1] > target_obs_dim:
+            raise ValueError(
+                f"{key} has observation width {weight.shape[1]}, cannot shrink to {target_obs_dim}"
+            )
+        expanded = torch.zeros(weight.shape[0], target_obs_dim, dtype=weight.dtype)
         expanded[:, : weight.shape[1]] = weight
         if weight.shape[1] == LEGACY_PLANNER_OBS_DIM:
             # V10 saw only the constant 1.30/2 height value, so its height
@@ -70,7 +87,9 @@ def migrate_stable_checkpoint(source: str | Path, destination: str | Path) -> Pa
         "infos": {
             "source_checkpoint": str(source),
             "observation_migration": (
-                "43-D: stable37 + Pt_xy + Pt1_xy + H_t + H_t1; "
+                f"{target_obs_dim}-D planner observation; "
+                "base contract is stable37 + Pt_xy + Pt1_xy + H_t + H_t1; "
+                "optional planner velocity channels initialized to zero; "
                 "legacy fixed 1.30 m H_t contribution folded into LSTM bias; "
                 "new H_t/H_t1 weights initialized to zero"
             ),

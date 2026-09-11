@@ -23,6 +23,7 @@ parser.add_argument("--teacher_checkpoint", required=True)
 parser.add_argument("--checkpoint", default=None)
 parser.add_argument("--reset_optimizer", action="store_true", help="Load checkpoint weights but start Adam from a fresh state")
 parser.add_argument("--eval_checkpoint", default=None)
+parser.add_argument("--visualize", action="store_true", help="Open the simulator UI during eval/training instead of forcing headless mode")
 parser.add_argument("--grid_search", action="store_true", help="Evaluate a 5x5 constant forward/tilt residual grid")
 parser.add_argument("--offset_grid_search", action="store_true",
                     help="Evaluate a 5x5 forward/tilt offset grid around the loaded policy")
@@ -47,6 +48,13 @@ parser.add_argument("--short_radius_min", type=float, default=0.50)
 parser.add_argument("--short_radius_max", type=float, default=0.80)
 parser.add_argument("--long_radius_min", type=float, default=0.80)
 parser.add_argument("--long_radius_max", type=float, default=1.00)
+parser.add_argument(
+    "--start_from_random_drop",
+    action="store_true",
+    help="Reset from the baseline-style high release before the first commanded hop.",
+)
+parser.add_argument("--initial_drop_height_min", type=float, default=0.8)
+parser.add_argument("--initial_drop_height_max", type=float, default=1.5)
 parser.add_argument("--curriculum_iterations", type=float, default=30.0,
                     help="With --curriculum_by_hops (always on here): completed hops per env "
                          "to reach the full 0.50-0.80 / 0.80-1.00 m, 180 deg ranges.  Pass 0 "
@@ -150,6 +158,8 @@ if not (0.0 < args.short_radius_min <= args.short_radius_max):
     parser.error("--short_radius_min/max must satisfy 0 < min <= max")
 if not (0.0 < args.long_radius_min <= args.long_radius_max):
     parser.error("--long_radius_min/max must satisfy 0 < min <= max")
+if not (0.0 <= args.initial_drop_height_min <= args.initial_drop_height_max):
+    parser.error("--initial_drop_height_min/max must satisfy 0 <= min <= max")
 if args.target_tolerance <= 0.0:
     parser.error("--target_tolerance must be positive")
 if args.precision_sigma <= 0.0:
@@ -181,7 +191,7 @@ long_landing_error_penalty = args.landing_error_penalty if args.long_landing_err
 short_tail_error_penalty = args.tail_error_penalty if args.short_tail_error_penalty is None else args.short_tail_error_penalty
 long_tail_error_penalty = args.tail_error_penalty if args.long_tail_error_penalty is None else args.long_tail_error_penalty
 args.continuous_queue = not args.pair_restart_queue
-args.headless = True
+args.headless = not args.visualize
 args.rendering_mode = "performance"
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
@@ -292,6 +302,9 @@ def env_cfg(evaluation: bool) -> PlannerRandomTwoHopEnvCfg:
     cfg.randomize_dynamics = randomize_training
     cfg.randomize_action_delay = randomize_training
     cfg.target_height = 1.0
+    cfg.start_from_random_drop = args.start_from_random_drop
+    cfg.initial_drop_height_min = args.initial_drop_height_min
+    cfg.initial_drop_height_max = args.initial_drop_height_max
     cfg.alternate_target_heights = False
     cfg.fixed_height_curriculum = False
     cfg.symmetric_height_tracking = True
@@ -599,6 +612,23 @@ def main():
             obs_dict, _, dones, _ = env.step(held)
             dones = dones.reshape(-1) > 0  # bool mask, see rollout branch
             obs = obs_dict["policy"]
+            settled_drop = getattr(
+                core,
+                "_initial_drop_settled_event",
+                torch.zeros(args.num_envs, dtype=torch.bool, device=device),
+            )
+            if torch.any(settled_drop):
+                with torch.no_grad():
+                    if args.grid_search:
+                        held[settled_drop] = grid_actions[group[settled_drop]]
+                    elif args.offset_grid_search:
+                        held[settled_drop] = apply_phase_grid_offset(
+                            obs[settled_drop],
+                            selected_mean(obs[settled_drop]),
+                            grid_offsets[group[settled_drop]],
+                        )
+                    elif not constant_eval:
+                        held[settled_drop] = selected_mean(obs[settled_drop])
             touchdown = core._touchdown_event
             if torch.any(touchdown):
                 landing_error = torch.linalg.norm(
@@ -726,6 +756,22 @@ def main():
         hop_return += hop_discount * (0.0002 * reward)
         hop_discount *= gamma_frame
         hop_duration += 1
+        settled_drop = getattr(
+            core,
+            "_initial_drop_settled_event",
+            torch.zeros(args.num_envs, dtype=torch.bool, device=device),
+        )
+        if torch.any(settled_drop):
+            with torch.no_grad():
+                new_dist = model.distribution(next_obs[settled_drop])
+                new_action = new_dist.sample()
+            held[settled_drop] = new_action
+            hop_obs[settled_drop] = next_obs[settled_drop]
+            hop_action[settled_drop] = new_action
+            hop_logp[settled_drop] = new_dist.log_prob(new_action).sum(-1)
+            hop_return[settled_drop] = 0.0
+            hop_discount[settled_drop] = 1.0
+            hop_duration[settled_drop] = 0
         boundary = base.unwrapped._touchdown_event | dones
         if torch.any(boundary):
             touchdown = core._touchdown_event

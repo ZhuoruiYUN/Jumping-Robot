@@ -1,0 +1,20 @@
+# Direct motor PPO tracking audit after the 15–20 cm run
+
+Source: user attachment `c3f0a18f-e1da-4ee7-81a4-72fe6746c633/pasted-text.txt`, current source, and TensorBoard run `2026-09-07_23-41-06` in the v67 landingxy/pairrestart experiment. This audit changes no physics, rewards, or training settings.
+
+## Confirmed findings
+
+1. `run_train_distance_15_20_boundary.sh` requests LR 3e-6, but the inherited PPO schedule is adaptive. Installed RSL-RL's high-KL branch uses `max(1e-5, learning_rate/1.5)`. TensorBoard `Loss/learning_rate`: iteration 0 = 1.51875e-5; 5, 10, 40, 60, 79 = 1e-5; 20 = 1.5e-5. Earlier descriptions of a fixed conservative LR were incorrect.
+2. `TwoHopRandomCommand.advance()` announces a third target after the first touchdown. At the second touchdown, `restart_pair()` discards that announced target and samples another first target for the new pair. The recent turn-limit repair did not fix preview consistency. CPU reproduction, 1024 environments, seed 42, radii 0.15–0.20 m, turn limit 30 degrees, exact second landings: mean announced/new-target discrepancy 0.065965 m, maximum 0.176175 m.
+3. The baseline-warmstart reward profile retains `goal_tolerance=0.35` m and `xy_reward_width=0.5` m. At 0.20 m error, the inherited XY proximity term still gives exp(-0.2/0.5)=0.6703 of its maximum and the goal bonus is active. Spatial target tolerance is 0.15 m. These are coarse acquisition settings, not a centimetre-precision contract. Other terms do distinguish smaller errors, so this does not mean there is no precision incentive.
+4. In the current continuous profile, `gate_touchdown_rewards_by_apex=False`, both low-apex penalties are zero, and pair reward is zero. Invalid low jumps can still earn `landing_precision`; at 0.10 m error it contributes about 4.994 per touchdown, even when the hit is rejected for height. `require_apex_tolerance_for_hit=False`; the minimum apex test remains. The failed two-hop-episode penalty changes do not apply to this continuous run.
+5. Observation XY commands are divided by `cfg.hop_distance`, which train/play set to the maximum requested radius. Moving 0.15 -> 0.20 m changes input scale: the same physical vector becomes 0.75 times its previous normalized value. No corresponding recurrent weight conversion exists for this scale change. Fixed-20-cm evaluation of a checkpoint trained with maximum 0.20 does not introduce this particular mismatch.
+6. `_reset_idx()` reports episode touchdown stats for reset environments, and `mean_cycle_apex_height_m` is their current cycle maximum, not an all-completed-jump apex average. The pasted last batch has reset count 1, 37 touchdowns, 0 hits and one tilt failure. It establishes a failed episode, not zero global model success. EMA target hit rate is 0.386, also not a whole-run deploy rate. Existing EVAL-DIRECT sums current per-environment episode buffers, which are cleared on death; it is not an all-history measurement either.
+
+## Interpretation and next step
+
+The task/reward, transfer, and evaluation contracts contain concrete inconsistencies. These findings do not establish that two waypoint inputs or four motor outputs are intrinsically too hard for PPO. Do not prescribe another distance/LR sweep from the final scalar printout.
+
+Before further training: make the intended LR schedule explicit; make announced next targets consistent with route execution; freeze observation scaling across curricula with checkpoint-aware conversion; accumulate touchdown/apex/hit/pair statistics before resets across the entire evaluation; separate XY-only success and height-qualified success at several tolerances. Then compare a known checkpoint under matched settings, followed by short controlled training experiments. Keep the actuator contract fixed during task ablations; the separate known action-history indexing defect must not be silently changed for old checkpoints.
+
+Validation: read actual TensorBoard events using Isaac Python without launching simulation; ran CPU command-generator reproduction. No new GPU training or deterministic rollout was run in this audit.

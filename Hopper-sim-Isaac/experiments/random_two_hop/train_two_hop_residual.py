@@ -23,6 +23,18 @@ parser.add_argument("--num_envs", type=int, default=256)
 parser.add_argument("--iterations", type=int, default=200)
 parser.add_argument("--target_height", type=float, default=1.0)
 parser.add_argument("--target_tolerance", type=float, default=0.10)
+parser.add_argument("--short_radius_max", type=float, default=0.10)
+parser.add_argument("--long_radius_max", type=float, default=0.10)
+parser.add_argument("--short_radius_min", type=float, default=0.0)
+parser.add_argument("--long_radius_min", type=float, default=0.0)
+parser.add_argument("--curriculum_radius_min", type=float, default=0.0)
+parser.add_argument("--curriculum_radius_max", type=float, default=0.02)
+parser.add_argument("--max_turn_angle", type=float, default=15.0)
+parser.add_argument("--start_from_random_drop", action="store_true")
+parser.add_argument("--retry_target_on_miss", action="store_true")
+parser.add_argument("--gentle_pair_curriculum", action="store_true")
+parser.add_argument("--initial_drop_height_min", type=float, default=1.42)
+parser.add_argument("--initial_drop_height_max", type=float, default=2.12)
 parser.add_argument("--collective_scale", type=float, default=0.03)
 parser.add_argument("--attitude_scale", type=float, default=0.05)
 parser.add_argument("--residual_slew_rate", type=float, default=0.02)
@@ -69,6 +81,7 @@ from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 from rsl_rl.runners import OnPolicyRunner
 
 from Quadhopper_Planner_Circular.rsl_rl_ppo_cfg import PlannerCircularPPORunnerCfg
+from Quadhopper_Planner_Circular.checkpoint_migration import migrate_stable_checkpoint
 from Quadhopper_Planner_Random.random_two_hop_env import PlannerRandomTwoHopEnvCfg
 from Quadhopper_Planner_Random.two_hop_residual_wrapper import (
     TeacherTwoHopResidualVecEnv,
@@ -109,38 +122,47 @@ def configure_env() -> PlannerRandomTwoHopEnvCfg:
     cfg.sim.device = args_cli.device
     cfg.seed = args_cli.seed
     cfg.debug_vis = False
-    cfg.force_full_planner = True
+    # A migrated stable teacher expects the original stationary-apex 37-D
+    # reference contract. The residual alone learns horizontal displacement.
+    cfg.force_full_planner = False
+    cfg.planner_reference_blend = 0.0
+    cfg.stance_reference_uses_apex_height = True
     cfg.observation_noise_std = 0.0 if args_cli.eval_checkpoint else 0.002
     if args_cli.eval_checkpoint:
         cfg.randomize_dynamics = False
         cfg.randomize_action_delay = False
     cfg.target_height = args_cli.target_height
+    cfg.start_from_random_drop = args_cli.start_from_random_drop
+    cfg.initial_drop_height_min = args_cli.initial_drop_height_min
+    cfg.initial_drop_height_max = args_cli.initial_drop_height_max
     cfg.alternate_target_heights = False
     cfg.fixed_height_curriculum = False
     cfg.symmetric_height_tracking = True
-    cfg.require_apex_tolerance_for_hit = True
+    cfg.require_apex_tolerance_for_hit = False
     cfg.relative_next_hop_observation = True
     cfg.restart_two_hop_pair = not args_cli.continuous_queue
-    cfg.short_hop_radius_min = 0.50
-    cfg.short_hop_radius_max = 0.80
-    cfg.long_hop_radius_min = 0.80
-    cfg.long_hop_radius_max = 1.00
-    cfg.max_turn_angle_deg = 180.0
-    if args_cli.state_planner or args_cli.phase_residual:
-        # Distances remain continuously randomized throughout the curriculum.
-        cfg.distance_curriculum_iterations = args_cli.curriculum_iterations
-        cfg.distance_curriculum_iteration_offset = args_cli.curriculum_iteration_offset
-        cfg.curriculum_short_radius_min = 0.50
-        cfg.curriculum_short_radius_max = 0.65
-        cfg.curriculum_long_radius_min = 0.80
-        cfg.curriculum_long_radius_max = 0.90
-        cfg.curriculum_max_turn_angle_deg = 30.0
-        cfg.curriculum_by_hops = args_cli.phase_residual
+    cfg.short_hop_radius_min = args_cli.short_radius_min
+    cfg.short_hop_radius_max = args_cli.short_radius_max
+    cfg.long_hop_radius_min = args_cli.long_radius_min
+    cfg.long_hop_radius_max = args_cli.long_radius_max
+    cfg.max_turn_angle_deg = args_cli.max_turn_angle
+    cfg.advance_route_on_miss = not args_cli.retry_target_on_miss
+    cfg.distance_curriculum_iterations = args_cli.curriculum_iterations
+    cfg.distance_curriculum_iteration_offset = args_cli.curriculum_iteration_offset
+    cfg.curriculum_short_radius_min = args_cli.curriculum_radius_min
+    cfg.curriculum_short_radius_max = args_cli.curriculum_radius_max
+    cfg.curriculum_long_radius_min = args_cli.curriculum_radius_min
+    cfg.curriculum_long_radius_max = args_cli.curriculum_radius_max
+    cfg.curriculum_max_turn_angle_deg = min(15.0, args_cli.max_turn_angle)
+    cfg.curriculum_by_hops = args_cli.phase_residual
+    if args_cli.eval_checkpoint:
+        # Deterministic validation always uses the requested final range.
+        cfg.distance_curriculum_iterations = 0.0
     cfg.target_tolerance = args_cli.target_tolerance
 
     # The current touchdown remains settled, while its attitude is optimized
     # for the direction of the already-observed following hop.
-    cfg.planner_landing_xy_velocity_scale = 0.0
+    cfg.planner_landing_xy_velocity_scale = 1.0
     cfg.anticipatory_velocity_blend = 0.0
     cfg.anticipatory_tilt_rad = math.radians(args_cli.next_tilt_deg)
     cfg.anticipation_start_phase = 0.55
@@ -163,6 +185,37 @@ def configure_env() -> PlannerRandomTwoHopEnvCfg:
     cfg.apex_event_reward_scale = 50.0
     cfg.apex_error_penalty_scale = -120.0
     cfg.height_progress_reward_scale = 30.0
+    if args_cli.retry_target_on_miss:
+        # First learn a bounded correction toward one persistent target.
+        # Pair/anticipatory credit is introduced only after first-attempt
+        # landing accuracy exists.
+        cfg.anticipatory_tilt_rad = 0.0
+        cfg.anticipatory_attitude_reward_scale = 0.0
+        cfg.anticipatory_attitude_penalty_scale = 0.0
+        cfg.prepared_landing_reward_scale = 10.0
+        cfg.pair_hit_reward_scale = 0.0
+        cfg.streak_progress_reward_scale = 0.0
+        cfg.circle_complete_reward_scale = 0.0
+        cfg.target_hit_reward_scale = 50.0
+        cfg.target_miss_penalty_scale = 0.0
+        cfg.landing_error_penalty_scale = -40.0
+        cfg.landing_precision_reward_scale = 30.0
+        cfg.planner_xy_reward_scale = 10.0
+        cfg.projected_landing_penalty_scale = -10.0
+    elif args_cli.gentle_pair_curriculum:
+        cfg.anticipatory_tilt_rad = 0.0
+        cfg.anticipatory_attitude_reward_scale = 0.0
+        cfg.anticipatory_attitude_penalty_scale = 0.0
+        cfg.prepared_landing_reward_scale = 20.0
+        cfg.pair_hit_reward_scale = 100.0
+        cfg.streak_progress_reward_scale = 20.0
+        cfg.circle_complete_reward_scale = 0.0
+        cfg.target_hit_reward_scale = 100.0
+        cfg.target_miss_penalty_scale = -30.0
+        cfg.landing_error_penalty_scale = -60.0
+        cfg.landing_precision_reward_scale = 45.0
+        cfg.planner_xy_reward_scale = 15.0
+        cfg.projected_landing_penalty_scale = -15.0
     cfg.power_model_path = str(
         PROJECT_DIR / "Quadhopper_Stable/model/quadhopper_memory_power.pt"
     )
@@ -178,6 +231,18 @@ def main():
         raise FileNotFoundError(teacher_checkpoint)
     teacher_data = torch.load(teacher_checkpoint, map_location="cpu", weights_only=False)
     teacher_width = teacher_data["model_state_dict"]["memory_a.rnn.weight_ih_l0"].shape[1]
+    if teacher_width == 37:
+        migrated_teacher = (
+            PROJECT_DIR / "outputs" / "planner_migrations" /
+            f"residual_teacher_{teacher_checkpoint.stem}_37d_to_43d.pt"
+        )
+        migrated_teacher.parent.mkdir(parents=True, exist_ok=True)
+        teacher_checkpoint = migrate_stable_checkpoint(
+            teacher_checkpoint, migrated_teacher, target_obs_dim=43
+        )
+        teacher_data = torch.load(teacher_checkpoint, map_location="cpu", weights_only=False)
+        teacher_width = teacher_data["model_state_dict"]["memory_a.rnn.weight_ih_l0"].shape[1]
+        print(f"[TWO-HOP RESIDUAL] migrated stable teacher: {teacher_checkpoint}")
     if teacher_width != 43:
         raise ValueError(f"Teacher must use the 43-D planner contract, got {teacher_width}")
 
@@ -216,6 +281,7 @@ def main():
             residual_penalty_scale=args_cli.residual_penalty_scale,
             slew_penalty_scale=args_cli.slew_penalty_scale,
             next_tilt_rad=math.radians(args_cli.next_tilt_deg),
+            compact_logging=True,
         )
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_dir = PROJECT_DIR / "logs/rsl_rl" / EXPERIMENT / timestamp
@@ -288,7 +354,7 @@ def main():
     )
     if args_cli.eval_checkpoint:
         policy = runner.get_inference_policy(device=args_cli.device)
-        obs = env.get_observations()
+        obs, _ = env.reset()
         with torch.inference_mode():
             for _ in range(args_cli.eval_steps):
                 obs, _, _, _ = env.step(policy(obs))
@@ -318,6 +384,16 @@ def main():
         print(
             "[EVAL-DIRECT] two_hop_pair_success_rate="
             f"{(core._pair_hits.sum().float() / pair_attempts.clamp_min(1.0)).item():.6f}",
+            flush=True,
+        )
+        print(
+            "[EVAL-DIRECT] physical_death_events="
+            f"{core._physical_death_total.sum().item():.0f}",
+            flush=True,
+        )
+        print(
+            "[EVAL-DIRECT] tilt_death_events="
+            f"{core._tilt_death_total.sum().item():.0f}",
             flush=True,
         )
     else:

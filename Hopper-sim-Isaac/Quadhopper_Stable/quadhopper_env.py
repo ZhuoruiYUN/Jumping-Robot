@@ -118,8 +118,24 @@ class QuadhopperEnvCfg(DirectRLEnvCfg):
     # =========================================================
     # 用于测试/实验对比的固定电机参数。
     # 训练时不会使用这些固定值，训练仍使用域随机化。
-    train_motor_time_constant_min = 0.1
-    train_motor_time_constant_max = 0.14
+    # Flight-data identification (2026-09-07): nominal first-order actuator
+    # time constant 0.0674 s. Keep roughly +/-20% coverage for robustness.
+    train_motor_time_constant_min = 0.054
+    train_motor_time_constant_max = 0.081
+    train_mass_multi_min = 0.95
+    train_mass_multi_max = 1.05
+    train_inertia_multi_min = 0.9
+    train_inertia_multi_max = 1.1
+    randomize_thrust_curve = False
+    # 单环境默认保持推力标称（可视化/CSV 对照）；实验需要时显式打开。
+    allow_single_env_thrust_rand = False
+    # 独立于 randomize_dynamics 的电机时间常数随机化（sim2real：实机电机
+    # 标称值来自最新飞行数据辨识；可在专项微调时独立随机化。
+    randomize_motor_time_constant = False
+    train_thrust_scale_min = 1.0
+    train_thrust_scale_max = 1.0
+    train_thrust_curve_shape_min = 1.0
+    train_thrust_curve_shape_max = 1.0
     train_drop_height_min = 0.8
     train_drop_height_max = 1.5
     curriculum_num_steps_per_env = QUADHOPPER_NUM_STEPS_PER_ENV
@@ -129,8 +145,10 @@ class QuadhopperEnvCfg(DirectRLEnvCfg):
     curriculum_initial_xy_radius_max = 5.0
     curriculum_roll_pitch_max = 0.25
     curriculum_yaw_max = 3.14159
-    play_motor_time_constant = 0.125
-    play_action_delay = 3
+    play_motor_time_constant = 0.0674
+    # 2026-09-05 修正：实机 FC 指令延迟 ≤1ms，旧值 3 步(30ms) 会压低训练增益
+    # （对照 LQR 部署工程：89.3% 零延迟 + 小概率 1/2 步）。
+    play_action_delay = 0
     play_target_pos = (0,0, 1.3)
     play_initial_pos = (0, 0, 1)
     ui_window_class_type = QuadhopperEnvWindow
@@ -161,6 +179,8 @@ class QuadhopperEnvCfg(DirectRLEnvCfg):
     xy_error_penalty_scale = -1.5
     xy_progress_reward_scale = 20.0
     goal_bonus_scale = 8.0
+    xy_reward_width = 0.5
+    goal_tolerance = 0.35
     lateral_vel_penalty_scale = -10.0
     flight_power_penalty_scale = -0.6
     hover_penalty_scale = -12.0
@@ -211,6 +231,8 @@ class QuadhopperEnv(DirectRLEnv):
         self.dr_mass_multi = torch.ones(self.num_envs, 1, device=self.device)
         self.dr_inertia_multi = torch.ones(self.num_envs, 3, device=self.device)
         self.dr_tm = torch.ones(self.num_envs, 4, device=self.device) * 0.069
+        self.dr_thrust_scale = torch.ones(self.num_envs, 4, device=self.device)
+        self.dr_thrust_curve_shape = torch.ones(self.num_envs, 4, device=self.device)
 
         self._dt_policy = self.sim.cfg.dt * self.cfg.decimation
         self._body_id = self._robot.find_bodies("Body")[0]
@@ -344,7 +366,14 @@ class QuadhopperEnv(DirectRLEnv):
         if self.num_envs == 1 or not self.cfg.randomize_action_delay:
             delay_idx = self.cfg.play_action_delay
         else:
-            delay_idx = torch.randint(2, 5, (1,)).item()
+            # 2026-09-05 修正：对照实机（≤1ms）与 LQR 部署工程，延迟分布改为
+            # 89.3% 零延迟 + 7.5% 1 步 + 3.2% 2 步（旧值固定 2-4 步）。
+            delay_idx = int(
+                torch.multinomial(
+                    torch.tensor([0.893, 0.075, 0.032], device=self.device),
+                    num_samples=1,
+                ).item()
+            )
         delayed_actions = self._action_history[-delay_idx]
 
         target_u = (delayed_actions * 0.5 + 0.5).clamp(0.0, 1.0)
@@ -359,11 +388,19 @@ class QuadhopperEnv(DirectRLEnv):
         )
 
         # === 物理推力计算依然使用归一化的 u ===
-        F = -0.2371 * u ** 2 + 0.8130 * u + 0.0113
+        F = (
+            -0.2371 * self.dr_thrust_curve_shape * u ** 2
+            + 0.8130 * u
+            + 0.0113
+        )
+        F = torch.clamp(F, min=0.0)
+        F = F * self.dr_thrust_scale
         F = F / self.dr_mass_multi
 
         L = 0.0813
-        K_tau = 5.4e-02
+        # 2026-09-05 修正：yaw 反扭矩系数按实机辨识值 1.72e-2（旧值 5.4e-2 偏大 3.1x，
+        # 与旧 I_ZZ 偏大 2.9x 恰好抵消指令增益，掩盖了扰动灵敏度错误）。
+        K_tau = 1.720762152765e-02
         F1, F2, F3, F4 = F[:, 0], F[:, 1], F[:, 2], F[:, 3]
         u1, u2, u3, u4 = u[:, 0], u[:, 1], u[:, 2], u[:, 3]
 
@@ -454,11 +491,13 @@ class QuadhopperEnv(DirectRLEnv):
         xy_progress_reward = torch.clamp(self._prev_distance_to_goal_xy - distance_to_goal_xy, min=-0.1, max=0.1)
         self._prev_distance_to_goal_xy = distance_to_goal_xy.detach()
         goal_bonus = torch.where(
-            distance_to_goal_xy < 0.35,
+            distance_to_goal_xy < self.cfg.goal_tolerance,
             torch.ones_like(distance_to_goal_xy),
             torch.zeros_like(distance_to_goal_xy),
         )
-        dist_reward_xy = torch.exp(-distance_to_goal_xy / 0.5)
+        dist_reward_xy = torch.exp(
+            -distance_to_goal_xy / max(self.cfg.xy_reward_width, 1.0e-6)
+        )
 
         z_error = torch.abs(self._desired_pos_w[:, 2] - self._robot.data.root_pos_w[:, 2])
         dist_reward_z = torch.exp(-z_error / 0.4)
@@ -535,11 +574,42 @@ class QuadhopperEnv(DirectRLEnv):
             self.dr_inertia_multi[env_ids] = 1.0
             self.dr_tm[env_ids] = self.cfg.play_motor_time_constant
         else:
-            self.dr_mass_multi[env_ids] = torch.empty(num_resets, 1, device=self.device).uniform_(0.95, 1.05)
-            self.dr_inertia_multi[env_ids] = torch.empty(num_resets, 3, device=self.device).uniform_(0.9, 1.1)
+            self.dr_mass_multi[env_ids] = torch.empty(num_resets, 1, device=self.device).uniform_(
+                self.cfg.train_mass_multi_min,
+                self.cfg.train_mass_multi_max,
+            )
+            self.dr_inertia_multi[env_ids] = torch.empty(num_resets, 3, device=self.device).uniform_(
+                self.cfg.train_inertia_multi_min,
+                self.cfg.train_inertia_multi_max,
+            )
             self.dr_tm[env_ids] = torch.empty(num_resets, 4, device=self.device).uniform_(
                 self.cfg.train_motor_time_constant_min,
                 self.cfg.train_motor_time_constant_max,
+            )
+
+        # Motor-response randomization is independent of randomize_dynamics,
+        # mirroring the thrust-curve switch (sim2real fine-tunes hold mass/
+        # inertia/delay fixed while covering the real motor bandwidth).
+        if self.cfg.randomize_motor_time_constant:
+            self.dr_tm[env_ids] = torch.empty(num_resets, 4, device=self.device).uniform_(
+                self.cfg.train_motor_time_constant_min,
+                self.cfg.train_motor_time_constant_max,
+            )
+
+        if (
+            self.num_envs == 1
+            and not self.cfg.allow_single_env_thrust_rand
+        ) or not self.cfg.randomize_thrust_curve:
+            self.dr_thrust_scale[env_ids] = 1.0
+            self.dr_thrust_curve_shape[env_ids] = 1.0
+        else:
+            self.dr_thrust_scale[env_ids] = torch.empty(num_resets, 4, device=self.device).uniform_(
+                self.cfg.train_thrust_scale_min,
+                self.cfg.train_thrust_scale_max,
+            )
+            self.dr_thrust_curve_shape[env_ids] = torch.empty(num_resets, 4, device=self.device).uniform_(
+                self.cfg.train_thrust_curve_shape_min,
+                self.cfg.train_thrust_curve_shape_max,
             )
 
         self._actions[env_ids] = 0.0

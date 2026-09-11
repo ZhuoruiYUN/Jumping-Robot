@@ -3,7 +3,8 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-USD_PATH = os.path.join(CURRENT_DIR, "model", "HopperAsset.usd")
+# 使用覆盖层：修正实机辨识的 yaw 惯量（I_ZZ 7.932e-4，旧值 2.306e-3 为错误值）
+USD_PATH = os.path.join(CURRENT_DIR, "model", "OriginJumpHopperAsset.usda")
 
 MY_HOPPER_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(

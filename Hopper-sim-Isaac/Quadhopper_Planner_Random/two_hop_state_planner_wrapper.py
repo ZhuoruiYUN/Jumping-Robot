@@ -238,7 +238,7 @@ class TeacherTwoHopStatePlannerVecEnv(VecEnv):
         # Causally refine one plan throughout stance, then freeze it in flight.
         # Every PPO action used for learning therefore affects the executed
         # command; this removes the ignored-action credit mismatch in v41.
-        stance = ~core._cycle_active
+        stance = (~core._cycle_active) & core._contact_confirmed
         decoded = self._decode_command(planner_actions)
         alpha = self.stance_plan_rate
         fresh_plan = stance & self._needs_new_plan

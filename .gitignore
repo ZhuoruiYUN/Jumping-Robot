@@ -63,6 +63,15 @@ events.out.tfevents.*
 !Hopper-sim-Isaac/Quadhopper_Stable/model/quadhopper_memory_power.pt
 !Hopper-sim-Isaac/Quadhopper_Stable/model/Jump Base.STL
 !Hopper-sim-Isaac/Quadhopper_Stable/model/Jump Leg.STL
+!Hopper-sim-Isaac/Quadhopper_Stable/model/OriginJumpHopperAsset.usda
+
+# Selected deployable policies and the self-contained professor-side MuJoCo
+# parity package. Training runs and intermediate checkpoints remain ignored.
+!Hopper-sim-Isaac/deployment/spatial_tracking_export_precision_zero40_v1/model_119.pt
+!Hopper-sim-Isaac/deployment/spatial_tracking_export_precision_zero40_v1/quadhopper_spatial_tracking_policy.onnx
+!Hopper-sim-Isaac/deployment/mujoco_spatial_parity_v11/model_39.pt
+!Hopper-sim-Isaac/deployment/mujoco_spatial_parity_v11/Quadhopper_Stable/model/Jump Base.STL
+!Hopper-sim-Isaac/deployment/mujoco_spatial_parity_v11/Quadhopper_Stable/model/Jump Leg.STL
 
 # ===== 调试输出 / 媒体 =====
 *.gif

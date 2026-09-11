@@ -1,0 +1,13 @@
+#usda 1.0
+(
+    defaultPrim = "Drone"
+    subLayers = [@HopperAsset.usd@]
+)
+over "Drone" {
+    over "Body" {
+        # 实机辨识惯量（2026-09-05 对照 LQR 部署工程修正）：
+        # 原 HopperAsset.usd 内 I_ZZ=2.306e-3 为旧值（回旋半径 11cm > 臂长 8cm，物理不可能）；
+        # 实机辨识 yaw 惯量 7.932e-4。I_XX/I_YY 与旧值一致（1.231e-3/1.286e-3）。
+        float3 physics:diagonalInertia = (1.231252e-3, 1.286169e-3, 7.931903e-4)
+    }
+}

@@ -25,7 +25,8 @@ BODY_MASS = TOTAL_MASS - LEG_MASS
 BODY_CENTER_OF_MASS = (0.0, 0.0, 0)  # m: move body CoM 2 cm lower
 LEG_CENTER_OF_MASS = (0.0, 0.0, 0)   # m: move leg CoM 2 cm lower
 
-I_XX, I_YY, I_ZZ = 1.231252e-03, 1.286169e-03, 2.305957e-03
+# 2026-09-05 修正：I_ZZ 改为实机辨识值 7.931903e-4（旧值 2.306e-3 回旋半径 11cm > 臂长 8cm，物理不可能）
+I_XX, I_YY, I_ZZ = 1.231252e-03, 1.286169e-03, 7.931903e-04
 LEG_I_XX, LEG_I_YY, LEG_I_ZZ = 1e-5, 1e-5, 1e-5
 
 DIAGONAL_M = 0.230

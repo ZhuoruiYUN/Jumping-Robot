@@ -31,6 +31,13 @@ parser.add_argument("--short_radius_min", type=float, default=0.20)
 parser.add_argument("--short_radius_max", type=float, default=0.50)
 parser.add_argument("--long_radius_min", type=float, default=0.50)
 parser.add_argument("--long_radius_max", type=float, default=0.80)
+parser.add_argument(
+    "--start_from_random_drop",
+    action="store_true",
+    help="Reset from the baseline-style high release before the first commanded hop.",
+)
+parser.add_argument("--initial_drop_height_min", type=float, default=0.8)
+parser.add_argument("--initial_drop_height_max", type=float, default=1.5)
 parser.add_argument("--curriculum_iterations", type=float, default=0.0)
 parser.add_argument("--curriculum_iteration_offset", type=float, default=0.0)
 parser.add_argument("--curriculum_max_turn_angle_deg", type=float, default=30.0)
@@ -64,6 +71,8 @@ if not (0.0 < args.short_radius_min <= args.short_radius_max):
     parser.error("--short_radius_min/max must satisfy 0 < min <= max")
 if not (0.0 < args.long_radius_min <= args.long_radius_max):
     parser.error("--long_radius_min/max must satisfy 0 < min <= max")
+if not (0.0 <= args.initial_drop_height_min <= args.initial_drop_height_max):
+    parser.error("--initial_drop_height_min/max must satisfy 0 <= min <= max")
 
 args.headless = True
 args.rendering_mode = "performance"
@@ -105,6 +114,9 @@ def configure_env(evaluation: bool) -> PlannerRandomTwoHopEnvCfg:
     cfg.randomize_dynamics = randomize_training
     cfg.randomize_action_delay = randomize_training
     cfg.target_height = 1.0
+    cfg.start_from_random_drop = args.start_from_random_drop
+    cfg.initial_drop_height_min = args.initial_drop_height_min
+    cfg.initial_drop_height_max = args.initial_drop_height_max
     cfg.alternate_target_heights = False
     cfg.fixed_height_curriculum = False
     cfg.symmetric_height_tracking = True

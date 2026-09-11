@@ -31,6 +31,7 @@ class TeacherTwoHopResidualVecEnv(VecEnv):
         slew_penalty_scale: float = 10.0,
         landing_error_scale_m: float = 0.25,
         next_tilt_rad: float = 0.105,
+        compact_logging: bool = False,
     ):
         self.base_env = base_env
         self.teacher_model = teacher_model
@@ -42,6 +43,7 @@ class TeacherTwoHopResidualVecEnv(VecEnv):
         self.slew_penalty_scale = float(slew_penalty_scale)
         self.landing_error_scale_m = float(landing_error_scale_m)
         self.next_tilt_rad = float(next_tilt_rad)
+        self.compact_logging = bool(compact_logging)
         if min(
             self.collective_scale,
             self.attitude_scale,
@@ -233,6 +235,25 @@ class TeacherTwoHopResidualVecEnv(VecEnv):
         log["Metrics/residual_induced_clip_fraction"] = (
             ((~teacher_saturated) & combined_saturated).float().mean()
         )
+        if self.compact_logging:
+            keep = {
+                "Episode_Reward/termination_p",
+                "Metrics/mean_cycle_apex_height_m",
+                "Metrics/episode_touchdown_error_m",
+                "Metrics/target_hit_rate",
+                "Metrics/short_target_hit_rate",
+                "Metrics/long_target_hit_rate",
+                "Metrics/touchdown_attitude_error_rad",
+                "Diagnostics/pair_attempts_batch_count",
+                "Diagnostics/pair_hits_batch_count",
+                "Diagnostics/conditional_second_attempts_batch_count",
+                "Diagnostics/conditional_second_hits_batch_count",
+                "Curriculum/long_radius_max_m",
+                "Metrics/residual_motor_abs_mean",
+                "Metrics/residual_motor_abs_max",
+                "Metrics/combined_action_clip_fraction",
+            }
+            extras["log"] = {key: value for key, value in log.items() if key in keep}
         return self._observation_dict(), reward, dones, extras
 
     def close(self):

@@ -78,8 +78,74 @@ class RandomTwoHopCommandTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             TwoHopRandomCommand(1, "cpu", 0.8, 0.5, 0.8, 1.0, 58)
 
+    def test_hard_replay_sampler_applies_to_both_queue_phases(self):
+        command = TwoHopRandomCommand(
+            self.num_envs,
+            "cpu",
+            0.20,
+            0.30,
+            0.20,
+            0.30,
+            58,
+            math.pi,
+            0.25,
+            0.75,
+        )
+        command.reset(self.env_ids, self.origins, random_phase=False)
+        first, second = command.lookahead()
+        first_radius = torch.linalg.norm(first - self.origins[:, :2], dim=1)
+        second_radius = torch.linalg.norm(second - first, dim=1)
+        for radius in (first_radius, second_radius):
+            self.assertTrue(torch.all(radius >= 0.20 - 1.0e-6))
+            self.assertTrue(torch.all(radius <= 0.30 + 1.0e-6))
+            hard_fraction = (radius >= 0.25).float().mean().item()
+            self.assertGreater(hard_fraction, 0.72)
+            self.assertLess(hard_fraction, 0.78)
+
+        command.advance(self.env_ids)
+        current, following = command.lookahead()
+        appended_radius = torch.linalg.norm(following - current, dim=1)
+        hard_fraction = (appended_radius >= 0.25).float().mean().item()
+        self.assertGreater(hard_fraction, 0.72)
+        self.assertLess(hard_fraction, 0.78)
+
+    def test_zero_hard_probability_keeps_uniform_evaluation_sampling(self):
+        command = TwoHopRandomCommand(
+            self.num_envs,
+            "cpu",
+            0.20,
+            0.30,
+            0.20,
+            0.30,
+            58,
+            math.pi,
+            0.25,
+            0.0,
+        )
+        command.reset(self.env_ids, self.origins, random_phase=False)
+        first, second = command.lookahead()
+        for radius in (
+            torch.linalg.norm(first - self.origins[:, :2], dim=1),
+            torch.linalg.norm(second - first, dim=1),
+        ):
+            upper_half_fraction = (radius >= 0.25).float().mean().item()
+            self.assertGreater(upper_half_fraction, 0.47)
+            self.assertLess(upper_half_fraction, 0.53)
+
+    def test_invalid_hard_replay_configuration_is_rejected(self):
+        with self.assertRaises(ValueError):
+            TwoHopRandomCommand(1, "cpu", .2, .3, .2, .3, 58, math.pi, .25, 1.1)
+        with self.assertRaises(ValueError):
+            TwoHopRandomCommand(1, "cpu", .2, .3, .2, .3, 58, math.pi, .30, .75)
+        with self.assertRaises(ValueError):
+            TwoHopRandomCommand(1, "cpu", .2, .3, .2, .3, 58, math.pi, None, .75)
+
     def test_restart_pair_uses_measured_position_and_short_long_order(self):
         self.command.advance(self.env_ids)
+        self.command.max_turn_angle_rad = math.pi / 6.0
+        previous_offset = (
+            self.command.targets_w[:, 0] - self.command.anchor_w
+        ).clone()
         measured = torch.randn(self.num_envs, 2)
         self.command.restart_pair(self.env_ids, measured)
         p_t, p_t1 = self.command.lookahead()
@@ -87,6 +153,16 @@ class RandomTwoHopCommandTest(unittest.TestCase):
         torch.testing.assert_close(self.command.anchor_w, measured)
         self.assert_distance_range(measured, p_t, 0.5, 0.8)
         self.assert_distance_range(p_t, p_t1, 0.8, 1.0)
+        first_offset = p_t - measured
+        cross = (
+            previous_offset[:, 0] * first_offset[:, 1]
+            - previous_offset[:, 1] * first_offset[:, 0]
+        )
+        dot = torch.sum(previous_offset * first_offset, dim=1)
+        turn = torch.abs(torch.atan2(cross, dot))
+        self.assertTrue(
+            torch.all(turn <= self.command.max_turn_angle_rad + 1.0e-6)
+        )
 
     def test_turn_curriculum_bounds_consecutive_heading_change(self):
         max_turn = math.pi / 4.0
