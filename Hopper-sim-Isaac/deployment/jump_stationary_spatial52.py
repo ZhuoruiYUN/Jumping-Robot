@@ -60,8 +60,6 @@ HANDOFF_MAX_Z_SPEED = 0.35
 HANDOFF_MAX_TILT_RAD = math.radians(12.0)
 SOFT_TILT_ABORT_RAD = math.radians(35.0)
 MAX_TILT_ABORT_RAD = math.radians(60.0)
-STATIONARY_XY_ABORT_M = 0.30
-XY_ABORT_MIN_ACTIVE_S = 0.20
 # 落地姿态保护：触地瞬间倾斜超过该角度即断油回 IDLE。
 # 正常落地实测 5-11°，2026-09-02 失控跳落地时 15-19°，取 15° 可干净分开两者。
 TOUCHDOWN_TILT_ABORT_DEG = 15.0
@@ -1079,8 +1077,8 @@ def run_autonomous_flight():
     soft_tilt_bad_ticks = 0
     hard_tilt_bad_ticks = 0
     touchdown_count = 0
-    xy_abort_requested = False
-    xy_abort_msg = ""
+    touchdown_abort_requested = False
+    touchdown_abort_msg = ""
 
     action_history = deque([np.zeros(4, dtype=np.float32) for _ in range(5)], maxlen=5)
 
@@ -1101,7 +1099,7 @@ def run_autonomous_flight():
     def reset_policy_state():
         nonlocal latched_command, previous_contact, cycle_active, needs_new_plan, startup_ready_ticks, freefall_ticks
         nonlocal previous_pwm_cmd, flight_start_time, soft_tilt_bad_ticks, hard_tilt_bad_ticks
-        nonlocal touchdown_count, xy_abort_requested, xy_abort_msg
+        nonlocal touchdown_count, touchdown_abort_requested, touchdown_abort_msg
         nonlocal policy_obs_valid, policy_update_this_frame
         latched_command[:] = 0.0
         teacher_policy.reset()
@@ -1128,8 +1126,8 @@ def run_autonomous_flight():
         soft_tilt_bad_ticks = 0
         hard_tilt_bad_ticks = 0
         touchdown_count = 0
-        xy_abort_requested = False
-        xy_abort_msg = ""
+        touchdown_abort_requested = False
+        touchdown_abort_msg = ""
         policy_obs_valid = 0
         policy_update_this_frame = 0
 
@@ -1166,7 +1164,6 @@ def run_autonomous_flight():
     deploy_xy_error_m = 0.0
     deploy_pwm_spread = 0.0
     deploy_safety_code = 0
-    xy_warn_active = False
 
     last_calc_time = initial_frame["time_s"] if initial_frame is not None else time.perf_counter()
     last_imu_predict_time = None
@@ -1459,28 +1456,15 @@ def run_autonomous_flight():
                     soft_tilt_bad_ticks = 0
                     hard_tilt_bad_ticks = 0
 
-                active_elapsed_s = (
-                    curr_calc_time - flight_start_time
-                    if flight_start_time is not None
-                    else 0.0
-                )
-                xy_warn_active = (
-                    flight_mode == 'JUMP'
-                    and active_elapsed_s >= XY_ABORT_MIN_ACTIVE_S
-                    and deploy_xy_error_m > STATIONARY_XY_ABORT_M
-                )
-                if xy_warn_active and deploy_safety_code == 0:
-                    deploy_safety_code = 3
-
-                if xy_abort_requested:
-                    xy_abort_requested = False
+                if touchdown_abort_requested:
+                    touchdown_abort_requested = False
                     m1, m2, m3, m4 = 0, 0, 0, 0
                     previous_pwm_cmd = None
                     deploy_safety_code = 3
                     flight_mode = 'IDLE'
                     reset_policy_state()
-                    print(f"!!!! XY/TILT ABORT: {xy_abort_msg}，断油回 IDLE；按 H 重新武装 !!!!")
-                    xy_abort_msg = ""
+                    print(f"!!!! TOUCHDOWN TILT ABORT: {touchdown_abort_msg}，断油回 IDLE；按 H 重新武装 !!!!")
+                    touchdown_abort_msg = ""
 
                 policy_update_this_frame = 0
                 if flight_mode in ('CALIBRATE', 'IDLE'):
@@ -1608,18 +1592,14 @@ def run_autonomous_flight():
                                 cycle_active = False
                                 needs_new_plan = True
                                 touchdown_count += 1
-                                # 防炸机：第 1 次触地是松手投放，不算；从第 1 跳落地起，
-                                # 落地误差超过 0.30 m 或落地姿态超过 15° 即请求断油回 IDLE
-                                # （机器人已在地面，断油安全）。
-                                if touchdown_count >= 2 and (
-                                    touchdown_error > STATIONARY_XY_ABORT_M
-                                    or deploy_tilt_deg > TOUCHDOWN_TILT_ABORT_DEG
+                                # 第 1 次触地是松手投放，不算。仅保留落地姿态
+                                # 保护；释放位置或落点误差不再触发断油。
+                                if (
+                                    touchdown_count >= 2
+                                    and deploy_tilt_deg > TOUCHDOWN_TILT_ABORT_DEG
                                 ):
-                                    xy_abort_requested = True
-                                    xy_abort_msg = (
-                                        f"落地误差 {touchdown_error:.2f} m, "
-                                        f"姿态 {deploy_tilt_deg:.1f}°"
-                                    )
+                                    touchdown_abort_requested = True
+                                    touchdown_abort_msg = f"姿态 {deploy_tilt_deg:.1f}°"
 
                         correction = np.zeros(4, dtype=np.float32)
                         if flight_mode == 'JUMP' and USE_SEMIMDP_PLANNER and planner_policy is not None:
