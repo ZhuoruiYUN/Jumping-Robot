@@ -10,11 +10,7 @@ The ONNX model has three inputs (`obs`, `h_in`, `c_in`) and three outputs
 between calls.  Reset them on environment/mission reset, disarm, estimator
 reset, or fall detection.  Clamp actions to `[-1, 1]`, then compute normalized
 motor targets with `u = clip(0.5 * action + 0.5, 0, 1)` in motor order
-`F1,F2,F3,F4`.  For a v12 checkpoint, apply the actuator shaping recorded in
-`policy_metadata.json` (height brake, spread/yaw projection, and floor PWM
-quantization), transmit that command, and put the corresponding executed
-action back into the five-sample policy history.  Do not put the raw actor
-request into that history.
+`F1,F2,F3,F4`.
 
 Install the lightweight inference dependencies and run the included check:
 
@@ -27,8 +23,7 @@ The ONNX file contains only the policy actor.  It does not generate the 52-D
 observation.  A complete controller must reproduce the exact ordering and
 scaling in `policy_metadata.json`, including the untimed Hermite path, path
 projection/carrot, current and next waypoint commands, contact/apex events,
-five-executed-action history, body/world transforms, and `wxyz` quaternion
-convention.
+five-action history, body/world transforms, and `wxyz` quaternion convention.
 It also needs state estimation, actuator handling, and independent safety
 limits.
 

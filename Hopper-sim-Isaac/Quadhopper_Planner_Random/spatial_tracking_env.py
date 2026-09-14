@@ -59,11 +59,70 @@ class SpatialTrackingEnvCfg(TrackingABEnvCfg):
     require_minimum_apex_for_hit = False
     require_apex_tolerance_for_hit = False
     gate_touchdown_rewards_by_apex = False
+    # When enabled by the height-refinement launcher, validity follows the
+    # *current* commanded height minus ``apex_tolerance``.  This matters for a
+    # moving fixed-height curriculum: a static minimum either makes the first
+    # stage impossible or leaves the final 1 m task under-constrained.
+    target_relative_valid_apex = False
     landing_hint_tilt_rad = math.radians(4)
     landing_hint_deadband_rad = math.radians(8)
     # This vector stays in the observation for checkpoint compatibility, but
     # does not prescribe a descent/next-hop attitude.
     landing_hint_penalty_scale = 0.0
+    # Exact in-place hops need a different last-flight preference from moving
+    # hops: once the body is already close to its fixed target, stop spending
+    # differential thrust on centimetre-scale corrections.  These terms are
+    # deliberately command-conditioned, so they never constrain a genuine
+    # horizontal hop or a recovery when the stationary target has been missed.
+    stationary_command_radius_m = 0.002
+    # Match the 5 cm touchdown-success tolerance: do not suppress a recovery
+    # until the stationary target is already within its accepted landing band.
+    stationary_hold_radius_m = 0.05
+    stationary_tilt_deadband_rad = math.radians(3.0)
+    stationary_tilt_penalty_scale = -6.0
+    stationary_yaw_rate_deadband_rad_s = 0.18
+    stationary_yaw_rate_penalty_scale = -2.0
+    stationary_action_spread_deadband = 0.15
+    stationary_action_spread_penalty_scale = -3.0
+    # Disabled by default so ordinary spatial tracking keeps its current apex
+    # objective.  The stationary-apex refinement enables these physical-event
+    # terms explicitly through its launcher.
+    stationary_apex_width_m = 0.05
+    stationary_apex_reward_scale = 0.0
+    stationary_apex_error_penalty_scale = 0.0
+    stationary_apex_shortfall_penalty_scale = 0.0
+    # Potential-difference reward for measured maximum height.  Unlike a
+    # fixed-time trajectory this emits reward only when the robot actually
+    # gains height, and its total return per hop is bounded.
+    stationary_apex_progress_scale = 0.0
+    # This is intentionally much wider than the terminal apex-quality window:
+    # the potential must distinguish a 0.90 m hop from a 0.40 m hop, otherwise
+    # it supplies no gradient until the final 5 cm.
+    stationary_apex_progress_width_m = 0.25
+    # Vertical-specialist terms are disabled in ordinary tracking.  They give
+    # credit only during the physically observed ascent, below the requested
+    # apex, so a policy cannot earn them by hovering or applying thrust after
+    # it has already met the height command.
+    stationary_ascent_support_scale = 0.0
+    stationary_ascent_collective_scale = 0.0
+    # Adapted from the reference full-reward task. During measured ascent,
+    # reward an energy state only when its ballistic apex approaches the
+    # commanded apex. It remains off for all existing checkpoints.
+    stationary_predicted_apex_width_m = 0.10
+    stationary_predicted_apex_reward_scale = 0.0
+    # All-hop counterpart of the stationary predicted-apex term.  It gives
+    # the direct-motor policy a causal ascent-phase signal before touchdown;
+    # leave disabled unless touchdown rewards are height-gated.
+    ascent_predicted_apex_width_m = 0.12
+    ascent_predicted_apex_reward_scale = 0.0
+    # Small all-hop event term. Unlike the stationary refinement terms, this
+    # covers moving hops too, but it is deliberately sparse and bounded so a
+    # correct landing objective remains dominant.
+    apex_event_height_width_m = 0.06
+    apex_event_height_reward_scale = 0.0
+    apex_event_shortfall_penalty_scale = 0.0
+    stationary_ascent_vz_min_mps = 0.10
+    stationary_ascent_height_margin_m = 0.03
     # Disable inherited timed/velocity/attitude objectives. Endpoint and apex
     # objectives retain the v2 weights; the two additions have bounded cost.
     touchdown_attitude_penalty_scale = 0.0
@@ -77,6 +136,23 @@ class SpatialTrackingEnvCfg(TrackingABEnvCfg):
     planner_velocity_reward_scale = 0.0
     descent_velocity_penalty_scale = 0.0
     planner_velocity_observation = False
+    # When below one, only that fraction of reset environments receives the
+    # task-level hardware randomization.  The remaining environments use the
+    # calibrated plant exactly, preserving a strong nominal hopping signal.
+    hardware_randomization_probability = 1.0
+
+
+@configclass
+class SpatialTrackingPhysical1mEnvCfg(SpatialTrackingEnvCfg):
+    """52-D physical-1m task with the measured deployment actuator contract."""
+
+    # Sim ground root-Z is 0.380 m while the Vicon-frame physical root is
+    # 0.285 m. A physical 1.000 m apex maps to 1.095 m in policy/sim space.
+    target_height = 1.095
+    deployment_action_target_height = target_height
+    corrected_action_delay_indexing = True
+    record_executed_action_history = True
+    apply_deployment_action_shaping = True
 
 
 class SpatialTrackingEnv(TrackingABEnv):
@@ -86,6 +162,16 @@ class SpatialTrackingEnv(TrackingABEnv):
         self._path_arc_fraction = torch.zeros(self.num_envs, device=self.device)
         self._spatial_progress = torch.zeros(self.num_envs, device=self.device)
         self._xy_progress = LandingXYProgress(self.num_envs, self.device)
+        # Parent touchdown handling advances the waypoint queue before rewards
+        # are assembled.  Preserve the completed command class so event rewards
+        # for that touchdown are never attributed to the following random hop.
+        self._completed_stationary_command = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self._stationary_apex_potential = torch.zeros(self.num_envs, device=self.device)
+        self._stationary_apex_active = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
         self._episode_sums['tracking_xy_progress'] = torch.zeros(
             self.num_envs, device=self.device
         )
@@ -96,6 +182,31 @@ class SpatialTrackingEnv(TrackingABEnv):
         self._guide_sum = torch.zeros(4, device=self.device, dtype=torch.float64)
         # Signed, approach-only, and retreat-only reward totals for evaluation.
         self._xy_progress_sum = torch.zeros(3, device=self.device, dtype=torch.float64)
+
+    def _reset_idx(self, env_ids):
+        """Mix calibrated and perturbed resets without changing the base plant."""
+        if env_ids is None or len(env_ids) == self.num_envs:
+            env_ids = self._robot._ALL_INDICES
+        super()._reset_idx(env_ids)
+        probability = self.cfg.hardware_randomization_probability
+        if (
+            self.num_envs == 1
+            or probability >= 1.0
+            or not self.cfg.randomize_dynamics
+        ):
+            return
+        hard_mask = torch.rand(len(env_ids), device=self.device) < probability
+        nominal_ids = env_ids[~hard_mask]
+        if len(nominal_ids) == 0:
+            return
+        # Parent reset has already sampled the perturbations.  Restore the
+        # calibrated values for nominal curriculum samples only.  This is
+        # task-local and leaves the stable baseline physics unchanged.
+        self.dr_mass_multi[nominal_ids] = 1.0
+        self.dr_inertia_multi[nominal_ids] = 1.0
+        self.dr_tm[nominal_ids] = self.cfg.play_motor_time_constant
+        self.dr_thrust_scale[nominal_ids] = 1.0
+        self.dr_thrust_curve_shape[nominal_ids] = 1.0
 
     def _replan(self, env_ids):
         if len(env_ids) == 0:
@@ -127,6 +238,17 @@ class SpatialTrackingEnv(TrackingABEnv):
                 env_ids, torch.linalg.norm(start[:, :2] - p, dim=1)
             )
 
+    def _advance_route(self, env_ids):
+        """Latch the completed command before the parent replaces it."""
+        if len(env_ids) > 0:
+            target, _ = self.commands.lookahead(env_ids)
+            self._completed_stationary_command[env_ids] = (
+                torch.linalg.norm(
+                    target - self.commands.anchor_w[env_ids], dim=1
+                ) <= self.cfg.stationary_command_radius_m
+            )
+        super()._advance_route(env_ids)
+
     def _update_reference(self):
         # Keep the source policy's physical landing/apex command unchanged.
         # Spatial guidance gets its own appended inputs, not a moving old goal.
@@ -157,6 +279,29 @@ class SpatialTrackingEnv(TrackingABEnv):
 
     def _update_cycle_events(self):
         super()._update_cycle_events()
+        if self.cfg.simulation_only_apex_bias_controller:
+            if self.cfg.apex_bias_feedback_mode == "liftoff_vz":
+                update_ids = self._liftoff_event & ~self._initial_drop_pending
+                signed_error = (
+                    self.cfg.apex_bias_liftoff_vz_target_mps
+                    - self._robot.data.root_lin_vel_w[:, 2]
+                )
+            else:
+                # The parent also resolves a missing apex at touchdown, after
+                # it has cleared _cycle_active.  That remains a valid
+                # measured-hop sample for apex-feedback mode.
+                update_ids = self._apex_event & ~self._initial_drop_pending
+                signed_error = self._active_target_height - self._cycle_max_z
+            update = torch.where(
+                signed_error.abs() > self.cfg.apex_bias_deadband_m,
+                signed_error * self.cfg.apex_bias_gain_pwm_per_m,
+                torch.zeros_like(signed_error),
+            )
+            self._apex_bias_pwm = torch.where(
+                update_ids,
+                (self._apex_bias_pwm + update).clamp(0.0, self.cfg.apex_bias_max_pwm),
+                self._apex_bias_pwm,
+            )
         # Hysteresis: once a measured airborne apex is crossed, stay on the
         # descending branch until touchdown/replan; motor latency shifts timing freely.
         if hasattr(self, '_descending_path'):
@@ -199,6 +344,165 @@ class SpatialTrackingEnv(TrackingABEnv):
         target_distance = torch.linalg.norm(
             self._robot.data.root_pos_w[:, :2] - target, dim=1
         )
+        # ``anchor_w -> target`` is the commanded displacement, unlike the
+        # physical start-to-target vector, which includes accumulated landing
+        # error.  This makes zero-hop detection robust to the very drift the
+        # policy is allowed to correct outside the hold radius.
+        commanded_hop_distance = torch.linalg.norm(
+            target - self.commands.anchor_w, dim=1
+        )
+        stationary_command = (
+            commanded_hop_distance <= self.cfg.stationary_command_radius_m
+        )
+        # Use the measured vertical velocity rather than the legacy apex-event
+        # latch.  The latter is not populated on every compatible recovery
+        # checkpoint, whereas negative Vz is available on hardware and exactly
+        # identifies the descending part of an untimed hop.
+        stationary_descent = (
+            (self._robot.data.root_lin_vel_w[:, 2] < -0.10)
+            & ~self._initial_drop_pending
+        )
+        stationary_hold = (
+            stationary_command
+            & (target_distance <= self.cfg.stationary_hold_radius_m)
+            & stationary_descent
+            & active
+        )
+        body_z = self._body_z_axis_w()[:, 2].clamp(-1.0, 1.0)
+        stationary_tilt = torch.acos(body_z)
+        stationary_tilt_cost = torch.square(
+            (stationary_tilt - self.cfg.stationary_tilt_deadband_rad).clamp_min(0)
+            / math.radians(12.0)
+        )
+        stationary_yaw_rate_cost = torch.square(
+            (torch.abs(self._robot.data.root_ang_vel_b[:, 2])
+             - self.cfg.stationary_yaw_rate_deadband_rad_s).clamp_min(0)
+            / 0.5
+        )
+        motor_spread = (
+            torch.max(self._motor_u, dim=1).values
+            - torch.min(self._motor_u, dim=1).values
+        )
+        stationary_action_spread_cost = torch.square(
+            (motor_spread - self.cfg.stationary_action_spread_deadband).clamp_min(0)
+            / 0.15
+        )
+        stationary_tilt_reward = (
+            stationary_hold.float() * stationary_tilt_cost
+            * self.cfg.stationary_tilt_penalty_scale * self.step_dt
+        )
+        stationary_yaw_reward = (
+            stationary_hold.float() * stationary_yaw_rate_cost
+            * self.cfg.stationary_yaw_rate_penalty_scale * self.step_dt
+        )
+        stationary_action_reward = (
+            stationary_hold.float() * stationary_action_spread_cost
+            * self.cfg.stationary_action_spread_penalty_scale * self.step_dt
+        )
+        # Height is rewarded as a potential difference of *measured maximum
+        # height*.  Thus a stationary hop earns return only as it rises toward
+        # the physical apex target; descent, hover, and a time schedule earn
+        # nothing.  Clipping makes the complete-hop contribution bounded.
+        stationary_apex_active = (
+            stationary_command & active & ~self._initial_drop_pending
+        )
+        stationary_apex_potential = -torch.square(
+            (self._active_target_height - self._cycle_max_z).clamp_min(0.0)
+            / self.cfg.stationary_apex_progress_width_m
+        ).clamp_max(1.0)
+        stationary_apex_progress = torch.where(
+            stationary_apex_active & self._stationary_apex_active,
+            (stationary_apex_potential - self._stationary_apex_potential).clamp_min(0.0),
+            torch.zeros_like(stationary_apex_potential),
+        )
+        stationary_apex_progress_reward = (
+            stationary_apex_progress * self.cfg.stationary_apex_progress_scale
+        )
+        self._stationary_apex_potential.copy_(torch.where(
+            stationary_apex_active, stationary_apex_potential,
+            torch.zeros_like(stationary_apex_potential),
+        ))
+        self._stationary_apex_active.copy_(stationary_apex_active)
+        # This terminal check is also measured at a physical velocity apex,
+        # never at a prescribed time.
+        stationary_apex_command = stationary_command | (
+            self._touchdown_event & self._completed_stationary_command
+        )
+        stationary_apex_event = stationary_apex_command & self._apex_event
+        stationary_apex_error = self._apex_error
+        stationary_apex_shortfall = torch.relu(
+            self._active_target_height - self._cycle_max_z
+        )
+        stationary_apex_quality = torch.exp(-torch.square(
+            stationary_apex_error / self.cfg.stationary_apex_width_m
+        ))
+        stationary_apex_reward = stationary_apex_event.float() * (
+            stationary_apex_quality * self.cfg.stationary_apex_reward_scale
+            + stationary_apex_error * self.cfg.stationary_apex_error_penalty_scale
+            + stationary_apex_shortfall * self.cfg.stationary_apex_shortfall_penalty_scale
+        )
+        stationary_ascent = (
+            stationary_command
+            & active
+            & ~self._initial_drop_pending
+            & (self._robot.data.root_lin_vel_w[:, 2] > self.cfg.stationary_ascent_vz_min_mps)
+            & (self._robot.data.root_pos_w[:, 2] > self.cfg.landing_root_height + 0.02)
+            & (self._robot.data.root_pos_w[:, 2] < (
+                self._active_target_height - self.cfg.stationary_ascent_height_margin_m
+            ))
+        )
+        stationary_ascent_support_reward = (
+            stationary_ascent.float()
+            * self.cfg.stationary_ascent_support_scale
+            * self.step_dt
+        )
+        stationary_ascent_collective_reward = (
+            stationary_ascent.float()
+            * self._motor_u.mean(dim=1)
+            * self.cfg.stationary_ascent_collective_scale
+            * self.step_dt
+        )
+        gravity = abs(self.sim.cfg.gravity[2]) if self.sim.cfg.gravity is not None else 9.81
+        predicted_apex = self._robot.data.root_pos_w[:, 2] + (
+            torch.clamp(self._robot.data.root_lin_vel_w[:, 2], min=0.0).square()
+            / (2.0 * gravity)
+        )
+        stationary_predicted_apex_reward = (
+            stationary_ascent.float()
+            * torch.exp(-torch.abs(predicted_apex - self._active_target_height)
+                        / self.cfg.stationary_predicted_apex_width_m)
+            * self.cfg.stationary_predicted_apex_reward_scale
+            * self.step_dt
+        )
+        spring_contact = (
+            self._robot.data.joint_pos[:, self._spring_joint_id] > 0.002
+        )
+        ascent_predicted_apex = (
+            active
+            & ~self._initial_drop_pending
+            & ~spring_contact
+            & (self._robot.data.root_lin_vel_w[:, 2] > self.cfg.stationary_ascent_vz_min_mps)
+            & (self._robot.data.root_pos_w[:, 2] < (
+                self._active_target_height - self.cfg.stationary_ascent_height_margin_m
+            ))
+        )
+        ascent_predicted_apex_reward = (
+            ascent_predicted_apex.float()
+            * torch.exp(-torch.abs(predicted_apex - self._active_target_height)
+                        / self.cfg.ascent_predicted_apex_width_m)
+            * self.cfg.ascent_predicted_apex_reward_scale
+            * self.step_dt
+        )
+        apex_event = self._apex_event & ~self._initial_drop_pending
+        apex_shortfall = torch.relu(self._active_target_height - self._cycle_max_z)
+        apex_quality = torch.exp(-torch.square(
+            (self._cycle_max_z - self._active_target_height)
+            / self.cfg.apex_event_height_width_m
+        ))
+        apex_event_height_reward = apex_event.float() * (
+            apex_quality * self.cfg.apex_event_height_reward_scale
+            + apex_shortfall * self.cfg.apex_event_shortfall_penalty_scale
+        )
         # Parent event handling already re-anchors on touchdown/queue advance,
         # liftoff and reset. Score consecutive airborne samples only; initial
         # drop and stance movement cannot leak into the next flight's reward.
@@ -230,6 +534,33 @@ class SpatialTrackingEnv(TrackingABEnv):
             'Guidance/target_distance_m': (target_distance * active).sum() / active.sum().clamp_min(1),
             'Guidance/xy_progress_reward': xy_progress_reward.mean(),
             'Guidance/two_hop_pair_reward': pair_reward.mean(),
+            'Guidance/stationary_hold_rate': stationary_hold.float().mean(),
+            'Guidance/stationary_command_rate': stationary_command.float().mean(),
+            'Guidance/stationary_descent_rate': stationary_descent.float().mean(),
+            'Guidance/stationary_tilt_penalty': stationary_tilt_reward.mean(),
+            'Guidance/stationary_yaw_rate_penalty': stationary_yaw_reward.mean(),
+            'Guidance/stationary_action_spread_penalty': stationary_action_reward.mean(),
+            'Guidance/stationary_apex_reward': stationary_apex_reward.mean(),
+            'Guidance/stationary_apex_progress_reward': stationary_apex_progress_reward.mean(),
+            'Guidance/stationary_apex_event_rate': stationary_apex_event.float().mean(),
+            'Guidance/stationary_apex_error_m': (
+                stationary_apex_error * stationary_apex_event.float()
+            ).sum() / stationary_apex_event.float().sum().clamp_min(1),
+            'Guidance/stationary_ascent_rate': stationary_ascent.float().mean(),
+            'Guidance/stationary_ascent_support_reward': stationary_ascent_support_reward.mean(),
+            'Guidance/stationary_ascent_collective_reward': stationary_ascent_collective_reward.mean(),
+            'Guidance/stationary_predicted_apex_reward': stationary_predicted_apex_reward.mean(),
+            'Guidance/ascent_predicted_apex_rate': ascent_predicted_apex.float().mean(),
+            'Guidance/ascent_predicted_apex_reward': ascent_predicted_apex_reward.mean(),
+            'Guidance/apex_event_height_reward': apex_event_height_reward.mean(),
+            'Guidance/apex_event_shortfall_m': (
+                apex_shortfall * apex_event.float()
+            ).sum() / apex_event.float().sum().clamp_min(1),
         })
         return (reward + path_cost + path_tracking + hint_cost + progress_reward
-                + xy_progress_reward + pair_reward)
+                + xy_progress_reward + pair_reward + stationary_tilt_reward
+                + stationary_yaw_reward + stationary_action_reward
+                + stationary_apex_reward + stationary_apex_progress_reward
+                + stationary_ascent_support_reward + stationary_ascent_collective_reward
+                + stationary_predicted_apex_reward + ascent_predicted_apex_reward
+                + apex_event_height_reward)

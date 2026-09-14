@@ -16,10 +16,13 @@ from spatial52_stationary_observer import Spatial52StationaryObserver
 COM_PORT = 'COM9'
 BAUD_RATE = 115200
 VICON_HOST = 'localhost:801'
-# Export this exact checkpoint first with export_spatial_tracking_policy.py.
-# This script accepts only the 52-D spatial LSTM and never applies the old
-# 43-D semi-MDP correction layer.
-TEACHER_POLICY_PATH = 'deployment/spatial_tracking_export_precision_zero40_v1/quadhopper_spatial_tracking_policy.onnx'
+# Restored known-good 40_v1 export.  This is a v11 policy: five raw-action
+# history slots and direct four-motor PWM, with no v12 post-policy shaping.
+TEACHER_POLICY_PATH = (
+    'deployment/spatial_tracking_export_precision_zero40_v1/'
+    'quadhopper_spatial_tracking_policy.onnx'
+)
+EXPECTED_POLICY_CONTRACT_VERSION = 11
 PLANNER_POLICY_PATH = ''
 USE_SEMIMDP_PLANNER = False
 USE_SHORT_ACTION_OFFSET = False
@@ -28,16 +31,17 @@ PAYLOAD_FORMAT = "<BBI6hffHHH"
 PAYLOAD_SIZE = struct.calcsize(PAYLOAD_FORMAT)
 PACKET_SIZE = 2 + PAYLOAD_SIZE
 
-# The 52-D policy was trained with simulated ground root-Z=0.380 m and
-# apex command=1.000 m.  Vicon measures the physical root at 0.285 m on the
-# ground.  Observation coordinates carry that 9.5 cm offset explicitly;
-# physical safety limits use the corresponding physical apex height.
-POLICY_GROUND_ROOT_Z = 0.380
+# 40_v1 was trained on raw root-Z observations with target Z=1.000.  Its
+# `landing_root_height=0.38` was a planner/path-reference constant, not the
+# simulated no-compression root height: recorded 40_v1 trajectories give
+# root_z + spring_pos ~= 0.273 m at zero spring compression.  Therefore do
+# not add a fictitious 0.095 m Vicon-to-policy root-Z offset here.
 MEASURED_GROUND_ROOT_Z = 0.285
-POLICY_Z_OFFSET = POLICY_GROUND_ROOT_Z - MEASURED_GROUND_ROOT_Z
 POLICY_TARGET_Z = 1.000
-PHYSICAL_TARGET_Z = POLICY_TARGET_Z - POLICY_Z_OFFSET
-TARGET_Z = PHYSICAL_TARGET_Z
+TARGET_Z = POLICY_TARGET_Z
+# This is retained only in the 15-D spatial path observation because 40_v1
+# was trained with that path endpoint.  It is not a ground-height calibration.
+SPATIAL_PATH_LANDING_REFERENCE_Z = 0.380
 STATIONARY_RADIUS = 0.0
 SHORT_ACTION_OFFSET = np.array([0.24, 0.0, -0.12, 0.0], dtype=np.float32)
 
@@ -64,9 +68,9 @@ MAX_TILT_ABORT_RAD = math.radians(60.0)
 # 正常落地实测 5-11°，2026-09-02 失控跳落地时 15-19°，取 15° 可干净分开两者。
 TOUCHDOWN_TILT_ABORT_DEG = 15.0
 
-# The spatial policy was trained using the calibrated thrust curve and no
-# post-policy gain.  Preserve raw policy actions in both the actuator path
-# and five-sample LSTM history; independent hard limits remain below.
+# The v12 spatial policy is trained against the same post-policy shaping used
+# here.  Feed the actual transmitted, quantized motor command back into the
+# five-sample LSTM history; the independent abort protections remain below.
 DEPLOY_ACTION_SCALE = 1.0
 DEPLOY_DIFFERENTIAL_SCALE = 1.0  # 已关闭（差动缩放被实飞证伪）
 MAX_PWM_SPREAD = 600.0
@@ -83,6 +87,7 @@ SOFT_TILT_BAD_TICKS_LIMIT = 3
 HARD_TILT_BAD_TICKS_LIMIT = 2
 MAX_AIRBORNE_YAW_DIAGONAL_PWM_DIFF = 140.0
 MAX_GROUNDED_YAW_DIAGONAL_PWM_DIFF = 220.0
+CONSTRAINT_PROJECTION_ITERATIONS = 2
 # 松手下坠触发：手拿时 Vz≈0；真正松手后约 50-80 ms 内 Vz 会持续低于该阈值。
 # 若操作者快速下放导致误触发，把阈值调低到 -0.8 或增大 FREE_FALL_TRIGGER_TICKS。
 FREE_FALL_TRIGGER_VZ = -0.5
@@ -141,7 +146,7 @@ USE_VICON_VEL_LPF = True
 
 # 【硬件参数对齐】跳跃机完全静止在地面时，Vicon测得的机身CoM高度(单位: 米)
 # 如果你的起落架更换或者动捕球位置变动，请微调此数值
-REST_LEG_LENGTH = 0.285
+REST_LEG_LENGTH = MEASURED_GROUND_ROOT_Z
 
 
 latest_vbat = 0.0
@@ -885,6 +890,17 @@ def limit_collective_for_height(pwm_cmd, pos_z, vel_z):
     return np.clip(pwm_cmd - (mean_pwm - max_mean), MIN_PWM, MAX_PWM)
 
 
+def shape_pwm_for_hardware(pwm_cmd, pos_z, vel_z, is_contact):
+    """Apply the v12 simulation-matched command envelope exactly once."""
+    shaped = limit_collective_for_height(pwm_cmd, pos_z, vel_z)
+    for _ in range(CONSTRAINT_PROJECTION_ITERATIONS):
+        shaped = limit_pwm_spread(shaped, MAX_PWM_SPREAD)
+        shaped = limit_yaw_diagonal_pwm(shaped, is_contact)
+    # The FC receives uint16 commands; make the policy history represent the
+    # actual transmitted values instead of unquantized/raw policy requests.
+    return np.floor(np.clip(shaped, MIN_PWM, MAX_PWM)).astype(np.float32)
+
+
 def limit_pwm_slew(pwm_cmd, previous_pwm_cmd):
     pwm_cmd = np.clip(np.asarray(pwm_cmd, dtype=np.float32), MIN_PWM, MAX_PWM)
     if previous_pwm_cmd is None or MAX_PWM_STEP_PER_POLICY_UPDATE <= 0.0:
@@ -986,6 +1002,12 @@ def motor_correction(pos_w, vel_w, quat_xyzw, joint_pos, cycle_active, latched_c
 
 def run_autonomous_flight():
     try:
+        use_legacy_raw_action_history = True
+        if USE_SEMIMDP_PLANNER or USE_SHORT_ACTION_OFFSET:
+            raise RuntimeError(
+                'The restored v11 40_v1 policy requires teacher-only direct control; '
+                'leave both planner options disabled.'
+            )
         teacher_policy = StatefulOnnxPolicy(TEACHER_POLICY_PATH, expected_obs_dim=52)
         planner_policy = (
             StatefulOnnxPolicy(PLANNER_POLICY_PATH, expected_obs_dim=69)
@@ -1034,7 +1056,7 @@ def run_autonomous_flight():
     flight_mode = 'CALIBRATE'
     waypoint_queue = StationaryWaypointQueue()
     spatial_observer = Spatial52StationaryObserver(
-        landing_root_height=POLICY_GROUND_ROOT_Z,
+        landing_root_height=SPATIAL_PATH_LANDING_REFERENCE_Z,
         apex_height=POLICY_TARGET_Z,
         waypoint_scale=0.20,
     )
@@ -1053,7 +1075,14 @@ def run_autonomous_flight():
     touchdown_abort_requested = False
     touchdown_abort_msg = ""
 
-    action_history = deque([np.zeros(4, dtype=np.float32) for _ in range(5)], maxlen=5)
+    # v11 was trained with five zero-valued raw actions, whereas v12 was
+    # trained with the actual transmitted PWM converted back to action space.
+    history_seed_action = (
+        np.zeros(4, dtype=np.float32)
+        if use_legacy_raw_action_history
+        else -np.ones(4, dtype=np.float32)
+    )
+    action_history = deque([history_seed_action.copy() for _ in range(5)], maxlen=5)
 
     # Keep the exact values used by the 100 Hz policy/actuator pipeline for
     # the 200 Hz CSV logger.  The previous implementation logged the disabled
@@ -1081,7 +1110,7 @@ def run_autonomous_flight():
             planner_policy.reset()
         action_history.clear()
         for _ in range(5):
-            action_history.append(np.zeros(4, dtype=np.float32))
+            action_history.append(history_seed_action.copy())
         last_teacher_obs_log.fill(0.0)
         last_teacher_action_log.fill(0.0)
         last_pwm_raw_log.fill(0.0)
@@ -1452,11 +1481,10 @@ def run_autonomous_flight():
                         policy_update_this_frame = 1
                         hold_zero_this_tick = False
                         current_target_x, current_target_y = waypoint_queue.targets_xy[0]
-                        # `pos_w` remains physical for safety and logging.
-                        # The policy receives the calibrated Isaac root-Z
-                        # convention, so its apex command remains exactly 1m.
+                        # 40_v1 receives raw Vicon root-Z.  The real rest root
+                        # height (0.285 m) is used only for contact/spring phase,
+                        # not added to the policy height observation.
                         policy_pos_w = pos_w.copy()
-                        policy_pos_w[2] += POLICY_Z_OFFSET
                         target_w = np.array([current_target_x, current_target_y, POLICY_TARGET_Z])
                         vel_w = policy_vel_w
 
@@ -1626,35 +1654,30 @@ def run_autonomous_flight():
                             action = np.clip(action, -1.0, 1.0)
                         previous_contact = is_contact > 0.5
 
-                        # Isaac stores raw policy actions, before actuator
-                        # mapping and any downstream physical safety shaping.
-                        action_history.append(
-                            np.zeros(4, dtype=np.float32)
-                            if hold_zero_this_tick else teacher_action
-                        )
-
                         target_u = action * 0.5 + 0.5
                         target_u = np.clip(target_u, 0.0, 1.0)
 
                         pwm_cmd = target_u * MAX_PWM
                         last_pwm_raw_log[:] = pwm_cmd
-                        pwm_cmd = limit_collective_for_height(
-                            pwm_cmd,
-                            float(pos_w[2]),
-                            float(vel_w[2]),
-                        )
-                        last_pwm_height_log[:] = pwm_cmd
-                        airborne_spread_limit = adaptive_airborne_pwm_spread_limit(
-                            deploy_tilt_deg,
-                            deploy_xy_error_m,
-                            is_contact,
-                        )
-                        pwm_cmd = limit_pwm_spread(pwm_cmd, airborne_spread_limit)
-                        pwm_cmd = limit_yaw_diagonal_pwm(pwm_cmd, is_contact)
+                        if use_legacy_raw_action_history:
+                            # Exact 40_v1 actuator path: direct, integer PWM.
+                            # In particular, do not cap collective near apex or
+                            # alter the differential pattern after the policy.
+                            pwm_cmd = np.floor(np.clip(pwm_cmd, MIN_PWM, MAX_PWM)).astype(np.float32)
+                            last_pwm_height_log[:] = pwm_cmd
+                        else:
+                            last_pwm_height_log[:] = limit_collective_for_height(
+                                pwm_cmd,
+                                float(pos_w[2]),
+                                float(vel_w[2]),
+                            )
+                            pwm_cmd = shape_pwm_for_hardware(
+                                pwm_cmd,
+                                float(pos_w[2]),
+                                float(vel_w[2]),
+                                is_contact,
+                            )
                         last_pwm_spread_yaw_log[:] = pwm_cmd
-                        pwm_cmd = limit_pwm_slew(pwm_cmd, previous_pwm_cmd)
-                        pwm_cmd = limit_pwm_spread(pwm_cmd, airborne_spread_limit)
-                        pwm_cmd = limit_yaw_diagonal_pwm(pwm_cmd, is_contact)
                         last_pwm_final_log[:] = pwm_cmd
                         previous_pwm_cmd = pwm_cmd.copy()
                         deploy_pwm_spread = float(np.max(pwm_cmd) - np.min(pwm_cmd))
@@ -1663,6 +1686,20 @@ def run_autonomous_flight():
                         if flight_mode in ('PREHOVER', 'JUMP_STARTUP') or hold_zero_this_tick:
                             m1, m2, m3, m4 = 0, 0, 0, 0
                             previous_pwm_cmd = None
+                            executed_pwm = np.zeros(4, dtype=np.float32)
+                        else:
+                            executed_pwm = pwm_cmd
+                        if use_legacy_raw_action_history:
+                            # v11's action delay is part of its LSTM contract:
+                            # append the unclipped-to-PWM policy action, even
+                            # while the supervisor holds the motors at zero.
+                            action_history.append(teacher_action.astype(np.float32))
+                        else:
+                            # v12 history is the transmitted command expressed
+                            # back in policy-action coordinates.
+                            action_history.append(
+                                (2.0 * executed_pwm / MAX_PWM - 1.0).astype(np.float32)
+                            )
 
                 if flight_mode in ('CALIBRATE', 'IDLE', 'PREHOVER', 'JUMP_STARTUP') or not link_health_ok:
                     deploy_pwm_spread = 0.0
@@ -1714,7 +1751,7 @@ def run_autonomous_flight():
                               deploy_xy_error_m,
                               deploy_pwm_spread,
                               deploy_safety_code,
-                              flight_mode
+                              flight_mode,
                           ]
 
                 log_data.append(log_row)

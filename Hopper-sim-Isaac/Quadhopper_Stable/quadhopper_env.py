@@ -6,6 +6,7 @@ import math
 import csv
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
@@ -21,6 +22,11 @@ from isaaclab.markers import CUBOID_MARKER_CFG
 
 from .my_hopper_cfg import MY_HOPPER_CFG
 from .agents.rsl_rl_ppo_cfg import QUADHOPPER_MAX_ITERATIONS, QUADHOPPER_NUM_STEPS_PER_ENV
+from .actuator_contract import (
+    corrected_delay_history_index,
+    shape_deployment_motor_commands,
+)
+from .action_parameterization import collective_residual_to_motor_u
 
 
 POWER_MODEL_HISTORY_LEN = 25
@@ -99,6 +105,52 @@ class QuadhopperEnvCfg(DirectRLEnvCfg):
     observation_noise_std = 0.01
     randomize_dynamics = True
     randomize_action_delay = True
+    # Legacy tasks retain the captured action/history semantics. A task that
+    # targets the current deployment opts into these as one coupled contract.
+    corrected_action_delay_indexing = False
+    record_executed_action_history = False
+    apply_deployment_action_shaping = False
+    # Research-only training aid: supplies a symmetric collective lower bound
+    # during the measured takeoff phases.  It is deliberately off by default
+    # and must never be included in an exported deployment contract.
+    simulation_only_phase_collective_baseline = False
+    phase_contact_collective_floor_pwm = 0.0
+    phase_ascent_collective_floor_pwm = 0.0
+    phase_ascent_vz_min_mps = 0.10
+    phase_ascent_height_margin_m = 0.03
+    # Stronger research-only alternative to the floor above.  During the
+    # energy-setting phases it owns the collective command; the policy can
+    # contribute only a zero-mean, tightly bounded attitude residual.
+    simulation_only_phase_collective_controller = False
+    phase_contact_collective_pwm = 0.0
+    phase_ascent_collective_pwm = 0.0
+    phase_descent_collective_pwm = 0.0
+    phase_contact_differential_limit_pwm = 0.0
+    phase_ascent_differential_limit_pwm = 0.0
+    phase_descent_differential_limit_pwm = 0.0
+    # Per-hop apex outer loop.  Unlike the rejected fixed waveform, this
+    # preserves the policy's complete motor pattern and only adds a symmetric
+    # contact-phase energy residual learned from the previous measured apex.
+    simulation_only_apex_bias_controller = False
+    apex_bias_initial_pwm = 0.0
+    apex_bias_gain_pwm_per_m = 0.0
+    apex_bias_max_pwm = 0.0
+    apex_bias_deadband_m = 0.02
+    apex_bias_compression_start_m = 0.006
+    apex_bias_compression_full_m = 0.030
+    apex_bias_feedback_mode = "apex"
+    apex_bias_liftoff_vz_target_mps = 0.0
+    deployment_action_target_height = 1.0
+    deployment_max_pwm = 1000.0
+    deployment_max_pwm_spread = 600.0
+    deployment_max_airborne_yaw_diagonal_pwm_diff = 140.0
+    deployment_max_grounded_yaw_diagonal_pwm_diff = 220.0
+    deployment_height_brake_start_m = 0.03
+    deployment_height_brake_full_m = 0.23
+    deployment_height_brake_vz_min = 0.05
+    deployment_height_brake_pwm_mean_soft = 720.0
+    deployment_height_brake_pwm_mean_hard = 520.0
+    deployment_constraint_projection_iterations = 2
     state_space = 0
     debug_vis = True  # 开启目标点可视化
 
@@ -146,6 +198,12 @@ class QuadhopperEnvCfg(DirectRLEnvCfg):
     curriculum_roll_pitch_max = 0.25
     curriculum_yaw_max = 3.14159
     play_motor_time_constant = 0.0674
+    # Deterministic nominal actuator parameters for one-environment plant
+    # identification.  Defaults retain the calibrated source plant exactly;
+    # experiments must opt in through the recovery launcher.
+    play_thrust_scale = 1.0
+    play_thrust_curve_shape = 1.0
+    action_parameterization = "direct_motor"
     # 2026-09-05 修正：实机 FC 指令延迟 ≤1ms，旧值 3 步(30ms) 会压低训练增益
     # （对照 LQR 部署工程：89.3% 零延迟 + 小概率 1/2 步）。
     play_action_delay = 0
@@ -216,8 +274,14 @@ class QuadhopperEnv(DirectRLEnv):
 
         self.history_len = 5
         self._action_history = deque(maxlen=self.history_len)
+        self._command_history = deque(maxlen=self.history_len)
+        history_reset_value = -1.0 if self.cfg.record_executed_action_history else 0.0
         for _ in range(self.history_len):
-            self._action_history.append(torch.zeros(self.num_envs, 4, device=self.device))
+            reset_action = torch.full(
+                (self.num_envs, 4), history_reset_value, device=self.device
+            )
+            self._action_history.append(reset_action.clone())
+            self._command_history.append(reset_action.clone())
 
         self._actions = torch.zeros(self.num_envs, 4, device=self.device)
         self._previous_actions = torch.zeros_like(self._actions)
@@ -227,6 +291,11 @@ class QuadhopperEnv(DirectRLEnv):
         self._desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._prev_distance_to_goal_xy = torch.zeros(self.num_envs, device=self.device)
         self._motor_u = torch.zeros(self.num_envs, 4, device=self.device)
+        # Keep policy requests separate from deployment-shaped commands for
+        # one-environment takeoff diagnostics.
+        self._raw_target_u = torch.zeros_like(self._motor_u)
+        self._shaped_target_u = torch.zeros_like(self._motor_u)
+        self._apex_bias_pwm = torch.zeros(self.num_envs, device=self.device)
 
         self.dr_mass_multi = torch.ones(self.num_envs, 1, device=self.device)
         self.dr_inertia_multi = torch.ones(self.num_envs, 3, device=self.device)
@@ -295,6 +364,8 @@ class QuadhopperEnv(DirectRLEnv):
             "Qw", "Qx", "Qy", "Qz",
             "M1", "M2", "M3", "M4",
             "U1", "U2", "U3", "U4",
+            "RawCmd1", "RawCmd2", "RawCmd3", "RawCmd4",
+            "ShapedCmd1", "ShapedCmd2", "ShapedCmd3", "ShapedCmd4",
             "Power_W",
             "Spring_Pos", "Spring_Vel", "Is_Contact",
         ]
@@ -312,6 +383,8 @@ class QuadhopperEnv(DirectRLEnv):
         target = self._desired_pos_w[env_id]
         motor_u = self._motor_u[env_id]
         pwm = motor_u * 1000.0
+        raw_cmd_pwm = self._raw_target_u[env_id] * 1000.0
+        shaped_cmd_pwm = self._shaped_target_u[env_id] * 1000.0
         joint_pos = self._robot.data.joint_pos[env_id, self._spring_joint_id]
         joint_vel = self._robot.data.joint_vel[env_id, self._spring_joint_id]
         is_contact = joint_pos > 0.002
@@ -324,6 +397,8 @@ class QuadhopperEnv(DirectRLEnv):
             float(quat[0].detach().cpu()), float(quat[1].detach().cpu()), float(quat[2].detach().cpu()), float(quat[3].detach().cpu()),
             float(pwm[0].detach().cpu()), float(pwm[1].detach().cpu()), float(pwm[2].detach().cpu()), float(pwm[3].detach().cpu()),
             float(motor_u[0].detach().cpu()), float(motor_u[1].detach().cpu()), float(motor_u[2].detach().cpu()), float(motor_u[3].detach().cpu()),
+            float(raw_cmd_pwm[0].detach().cpu()), float(raw_cmd_pwm[1].detach().cpu()), float(raw_cmd_pwm[2].detach().cpu()), float(raw_cmd_pwm[3].detach().cpu()),
+            float(shaped_cmd_pwm[0].detach().cpu()), float(shaped_cmd_pwm[1].detach().cpu()), float(shaped_cmd_pwm[2].detach().cpu()), float(shaped_cmd_pwm[3].detach().cpu()),
             float(predicted_power[env_id].detach().cpu()),
             float(joint_pos.detach().cpu()),
             float(joint_vel.detach().cpu()),
@@ -350,9 +425,31 @@ class QuadhopperEnv(DirectRLEnv):
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
-        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
-        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
-        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+        # TerrainImporterCfg("plane") resolves to Isaac's remote Grid USD.
+        # Training must not block or fail when that external asset endpoint is
+        # unavailable.  This local cuboid has the same flat z=0 contact
+        # surface and configured friction/restitution, while the grid below
+        # exactly reproduces TerrainImporter's plane env-origin layout.
+        num_envs = self.scene.cfg.num_envs
+        env_spacing = self.scene.cfg.env_spacing
+        num_rows = math.ceil(num_envs / int(math.sqrt(num_envs)))
+        num_cols = math.ceil(num_envs / num_rows)
+        rows, cols = torch.meshgrid(
+            torch.arange(num_rows, device=self.device),
+            torch.arange(num_cols, device=self.device),
+            indexing="ij",
+        )
+        env_origins = torch.zeros(num_envs, 3, device=self.device)
+        env_origins[:, 0] = -(rows.flatten()[:num_envs] - (num_rows - 1) / 2) * env_spacing
+        env_origins[:, 1] = (cols.flatten()[:num_envs] - (num_cols - 1) / 2) * env_spacing
+        self._terrain = SimpleNamespace(env_origins=env_origins)
+        ground_span = max(num_rows, num_cols) * env_spacing + 2.0 * env_spacing
+        ground_cfg = sim_utils.CuboidCfg(
+            size=(ground_span, ground_span, 0.02),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            physics_material=self.cfg.terrain.physics_material,
+        )
+        ground_cfg.func("/World/ground/local_plane", ground_cfg, translation=(0.0, 0.0, -0.01))
         self.scene.clone_environments(copy_from_source=False)
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
@@ -361,7 +458,12 @@ class QuadhopperEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         self._previous_actions = self._actions.clone()
         self._actions = actions.clone().clamp(-1.0, 1.0)
-        self._action_history.append(self._actions.clone())
+        if self.cfg.record_executed_action_history:
+            self._command_history.append(self._actions.clone())
+        else:
+            # Preserve the frozen baseline: the visible raw-action history is
+            # also the queue used by its legacy delay indexing.
+            self._action_history.append(self._actions.clone())
 
         if self.num_envs == 1 or not self.cfg.randomize_action_delay:
             delay_idx = self.cfg.play_action_delay
@@ -374,9 +476,171 @@ class QuadhopperEnv(DirectRLEnv):
                     num_samples=1,
                 ).item()
             )
-        delayed_actions = self._action_history[-delay_idx]
+        delay_history = (
+            self._command_history
+            if self.cfg.record_executed_action_history
+            else self._action_history
+        )
+        if self.cfg.corrected_action_delay_indexing:
+            delay_index = corrected_delay_history_index(delay_idx, self.history_len)
+        else:
+            # Historical behavior: delay_idx==0 selects slot 0 because -0 == 0.
+            delay_index = -delay_idx
+        delayed_actions = delay_history[delay_index]
 
-        target_u = (delayed_actions * 0.5 + 0.5).clamp(0.0, 1.0)
+        if self.cfg.action_parameterization == "collective_residual_v1":
+            target_u = collective_residual_to_motor_u(delayed_actions)
+        else:
+            target_u = (delayed_actions * 0.5 + 0.5).clamp(0.0, 1.0)
+        self._raw_target_u.copy_(target_u)
+        if self.cfg.simulation_only_apex_bias_controller:
+            # Apply only symmetric energy late in spring compression.  The
+            # existing policy differential remains untouched unless physical
+            # saturation itself clips a motor command.
+            spring_pos = self._robot.data.joint_pos[:, self._spring_joint_id]
+            compression = ((spring_pos - self.cfg.apex_bias_compression_start_m)
+                           / max(self.cfg.apex_bias_compression_full_m
+                                 - self.cfg.apex_bias_compression_start_m, 1.0e-6)).clamp(0.0, 1.0)
+            contact = spring_pos > 0.002
+            bias = self._apex_bias_pwm * compression * contact
+            target_u = (target_u + (bias / 1000.0).unsqueeze(-1)).clamp(0.0, 1.0)
+        if self.cfg.simulation_only_phase_collective_baseline:
+            # This is intentionally a *simulation-only* teacher.  It lifts
+            # the collective command only to a phase-specific floor while
+            # preserving the policy's four-motor differential.  Executed
+            # post-floor actions enter the recurrent history below, so the
+            # policy is trained against exactly the plant it sees here.
+            contact = self._robot.data.joint_pos[:, self._spring_joint_id] > 0.002
+            initial_drop = getattr(
+                self,
+                "_initial_drop_pending",
+                torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
+            )
+            cycle_active = getattr(
+                self,
+                "_cycle_active",
+                torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
+            )
+            target_height = getattr(self, "_active_target_height", None)
+            if target_height is None:
+                target_height = torch.full(
+                    (self.num_envs,),
+                    self.cfg.deployment_action_target_height,
+                    device=self.device,
+                    dtype=target_u.dtype,
+                )
+            ascending = (
+                ~contact
+                & cycle_active
+                & ~initial_drop
+                & (self._robot.data.root_lin_vel_w[:, 2] > self.cfg.phase_ascent_vz_min_mps)
+                & (self._robot.data.root_pos_w[:, 2] < target_height - self.cfg.phase_ascent_height_margin_m)
+            )
+            floor_pwm = torch.where(
+                contact & ~initial_drop,
+                torch.full_like(target_height, self.cfg.phase_contact_collective_floor_pwm),
+                torch.zeros_like(target_height),
+            )
+            floor_pwm = torch.where(
+                ascending,
+                torch.full_like(target_height, self.cfg.phase_ascent_collective_floor_pwm),
+                floor_pwm,
+            )
+            collective_deficit = (floor_pwm / 1000.0 - target_u.mean(dim=-1)).clamp_min(0.0)
+            target_u = (target_u + collective_deficit.unsqueeze(-1)).clamp(0.0, 1.0)
+        if self.cfg.simulation_only_phase_collective_controller:
+            # Do not confuse a mean-PWM floor with collective control.  The
+            # latter fixes takeoff energy to the open-loop validated waveform
+            # and exposes policy output only as a zero-mean attitude residual.
+            # This remains simulation-only until separately validated on hw.
+            contact = self._robot.data.joint_pos[:, self._spring_joint_id] > 0.002
+            initial_drop = getattr(
+                self,
+                "_initial_drop_pending",
+                torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
+            )
+            cycle_active = getattr(
+                self,
+                "_cycle_active",
+                torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
+            )
+            target_height = getattr(self, "_active_target_height", None)
+            if target_height is None:
+                target_height = torch.full(
+                    (self.num_envs,),
+                    self.cfg.deployment_action_target_height,
+                    device=self.device,
+                    dtype=target_u.dtype,
+                )
+            contact_phase = contact & ~initial_drop
+            ascent_phase = (
+                ~contact
+                & cycle_active
+                & ~initial_drop
+                & (self._robot.data.root_lin_vel_w[:, 2] > self.cfg.phase_ascent_vz_min_mps)
+            )
+            descent_phase = cycle_active & ~initial_drop & ~contact & ~ascent_phase
+            raw_pwm = target_u * 1000.0
+            zero_mean_residual = raw_pwm - raw_pwm.mean(dim=-1, keepdim=True)
+            contact_residual = zero_mean_residual.clamp(
+                -self.cfg.phase_contact_differential_limit_pwm,
+                self.cfg.phase_contact_differential_limit_pwm,
+            )
+            ascent_residual = zero_mean_residual.clamp(
+                -self.cfg.phase_ascent_differential_limit_pwm,
+                self.cfg.phase_ascent_differential_limit_pwm,
+            )
+            descent_residual = zero_mean_residual.clamp(
+                -self.cfg.phase_descent_differential_limit_pwm,
+                self.cfg.phase_descent_differential_limit_pwm,
+            )
+            contact_pwm = self.cfg.phase_contact_collective_pwm + contact_residual
+            ascent_pwm = self.cfg.phase_ascent_collective_pwm + ascent_residual
+            descent_pwm = self.cfg.phase_descent_collective_pwm + descent_residual
+            # The feasibility scan starts every reset with zero motor command.
+            # Own the initial drop as well; otherwise stale source-policy
+            # commands alter motor state before the first controlled contact.
+            controlled_pwm = torch.where(initial_drop.unsqueeze(-1), torch.zeros_like(raw_pwm), raw_pwm)
+            controlled_pwm = torch.where(contact_phase.unsqueeze(-1), contact_pwm, controlled_pwm)
+            controlled_pwm = torch.where(ascent_phase.unsqueeze(-1), ascent_pwm, controlled_pwm)
+            controlled_pwm = torch.where(descent_phase.unsqueeze(-1), descent_pwm, controlled_pwm)
+            target_u = (controlled_pwm / 1000.0).clamp(0.0, 1.0)
+        if self.cfg.apply_deployment_action_shaping:
+            contact = self._robot.data.joint_pos[:, self._spring_joint_id] > 0.002
+            target_height = getattr(self, "_active_target_height", None)
+            if target_height is None:
+                target_height = torch.full(
+                    (self.num_envs,),
+                    self.cfg.deployment_action_target_height,
+                    device=self.device,
+                    dtype=target_u.dtype,
+                )
+            target_u = shape_deployment_motor_commands(
+                target_u,
+                is_contact=contact,
+                root_z=self._robot.data.root_pos_w[:, 2],
+                root_vz=self._robot.data.root_lin_vel_w[:, 2],
+                target_z=target_height,
+                max_pwm=self.cfg.deployment_max_pwm,
+                max_pwm_spread=self.cfg.deployment_max_pwm_spread,
+                max_airborne_yaw_diagonal_pwm_diff=(
+                    self.cfg.deployment_max_airborne_yaw_diagonal_pwm_diff
+                ),
+                max_grounded_yaw_diagonal_pwm_diff=(
+                    self.cfg.deployment_max_grounded_yaw_diagonal_pwm_diff
+                ),
+                height_brake_start_m=self.cfg.deployment_height_brake_start_m,
+                height_brake_full_m=self.cfg.deployment_height_brake_full_m,
+                height_brake_vz_min=self.cfg.deployment_height_brake_vz_min,
+                height_brake_pwm_mean_soft=self.cfg.deployment_height_brake_pwm_mean_soft,
+                height_brake_pwm_mean_hard=self.cfg.deployment_height_brake_pwm_mean_hard,
+                projection_iterations=(
+                    self.cfg.deployment_constraint_projection_iterations
+                ),
+            )
+        self._shaped_target_u.copy_(target_u)
+        if self.cfg.record_executed_action_history:
+            self._action_history.append((2.0 * target_u - 1.0).clone())
         alpha = self._dt_policy / (self.dr_tm + self._dt_policy)
         self._motor_u = alpha * target_u + (1.0 - alpha) * self._motor_u
         u = self._motor_u
@@ -600,8 +864,8 @@ class QuadhopperEnv(DirectRLEnv):
             self.num_envs == 1
             and not self.cfg.allow_single_env_thrust_rand
         ) or not self.cfg.randomize_thrust_curve:
-            self.dr_thrust_scale[env_ids] = 1.0
-            self.dr_thrust_curve_shape[env_ids] = 1.0
+            self.dr_thrust_scale[env_ids] = self.cfg.play_thrust_scale
+            self.dr_thrust_curve_shape[env_ids] = self.cfg.play_thrust_curve_shape
         else:
             self.dr_thrust_scale[env_ids] = torch.empty(num_resets, 4, device=self.device).uniform_(
                 self.cfg.train_thrust_scale_min,
@@ -614,8 +878,13 @@ class QuadhopperEnv(DirectRLEnv):
 
         self._actions[env_ids] = 0.0
         self._motor_u[env_ids] = 0.0
+        self._raw_target_u[env_ids] = 0.0
+        self._shaped_target_u[env_ids] = 0.0
+        self._apex_bias_pwm[env_ids] = self.cfg.apex_bias_initial_pwm
+        history_reset_value = -1.0 if self.cfg.record_executed_action_history else 0.0
         for i in range(len(self._action_history)):
-            self._action_history[i][env_ids] = 0.0
+            self._action_history[i][env_ids] = history_reset_value
+            self._command_history[i][env_ids] = history_reset_value
 
         # =========================================================
         # 👑 重置时清空神经网络历史与电量

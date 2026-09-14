@@ -963,7 +963,8 @@ class PlannerCircularEnv(QuadhopperEnv):
                 self._cycle_max_z[touchdown_ids] - self._active_target_height[touchdown_ids]
             )
             self._settled_apex_valid[touchdown_ids] = True
-            if self.cfg.alternate_target_heights or self.cfg.adaptive_apex_height:
+            if (self.cfg.alternate_target_heights or self.cfg.adaptive_apex_height
+                    or getattr(self.cfg, 'target_relative_valid_apex', False)):
                 valid_apex_threshold = torch.maximum(
                     self._active_target_height[touchdown_ids] - self.cfg.apex_tolerance,
                     torch.full_like(
@@ -1179,7 +1180,8 @@ class PlannerCircularEnv(QuadhopperEnv):
             if self.cfg.gate_touchdown_rewards_by_apex
             else self._touchdown_event.float()
         )
-        if self.cfg.alternate_target_heights or self.cfg.adaptive_apex_height:
+        if (self.cfg.alternate_target_heights or self.cfg.adaptive_apex_height
+                or getattr(self.cfg, 'target_relative_valid_apex', False)):
             valid_apex_threshold = torch.maximum(
                 self._active_target_height - self.cfg.apex_tolerance,
                 torch.full_like(

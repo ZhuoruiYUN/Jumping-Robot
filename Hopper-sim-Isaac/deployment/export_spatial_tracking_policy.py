@@ -24,6 +24,15 @@ except ImportError:
 
 OBS_DIM = 52
 HIDDEN_DIM = 256
+V12_ACTION_HISTORY = "five_executed_post_limit_motor_actions_oldest_to_newest"
+V12_ACTION_SHAPING = {
+    "version": "height_spread_yaw_v1",
+    "max_pwm_spread": 600.0,
+    "airborne_yaw_diagonal_pwm_diff": 140.0,
+    "grounded_yaw_diagonal_pwm_diff": 220.0,
+    "constraint_projection_iterations": 2,
+    "pwm_quantization": "floor_to_integer",
+}
 OBSERVATIONS = [
     {"slice": [0, 3], "name": "linear_velocity_body", "frame": "body", "units": "m/s"},
     {"slice": [3, 6], "name": "angular_velocity_body", "frame": "body", "units": "rad/s"},
@@ -33,7 +42,7 @@ OBSERVATIONS = [
     {"slice": [14, 15], "name": "spring_contact", "definition": "spring_position > 0.002 m"},
     {"slice": [15, 16], "name": "spring_position", "units": "m"},
     {"slice": [16, 17], "name": "spring_velocity", "units": "m/s"},
-    {"slice": [17, 37], "name": "last_five_raw_policy_actions", "layout": "oldest_to_newest, F1..F4"},
+    {"slice": [17, 37], "name": "last_five_actions", "layout": "oldest_to_newest, F1..F4"},
     {"slice": [37, 39], "name": "current_landing_xy_error_body", "scale": "divide by 0.20 m"},
     {"slice": [39, 41], "name": "next_hop_displacement_body", "scale": "divide by 0.20 m"},
     {"slice": [41, 42], "name": "current_absolute_apex_command", "scale": "divide by 2.0 m"},
@@ -167,6 +176,24 @@ def main() -> None:
     contract = (data.get("infos") or {}).get("tracking_recovery_contract") or {}
     if contract.get("obs_dim") != OBS_DIM or contract.get("actions") != 4:
         raise ValueError("Checkpoint does not carry the expected 52-D/four-action contract")
+    if (contract.get("simulation_only_phase_collective_baseline", False)
+            or contract.get("simulation_only_phase_collective_controller", False)
+            or contract.get("simulation_only_apex_bias_controller", False)):
+        raise ValueError(
+            "Refusing to export a simulation-only phase-collective-baseline checkpoint. "
+            "It has not been validated as a deployment controller."
+        )
+    if contract.get("version") == 12:
+        if contract.get("action_history") != V12_ACTION_HISTORY:
+            raise ValueError("v12 checkpoint is missing the executed-action history contract")
+        if contract.get("deployment_action_shaping") != V12_ACTION_SHAPING:
+            raise ValueError("v12 checkpoint actuator shaping does not match the deployment contract")
+        if not np.isclose(contract.get("policy_target_root_z_m", np.nan), 1.095):
+            raise ValueError("v12 checkpoint does not carry the 1.095 m policy/sim target")
+        if not np.isclose(contract.get("physical_ground_root_z_m", np.nan), 0.285):
+            raise ValueError("v12 checkpoint does not carry the measured 0.285 m ground root height")
+        if not np.isclose(contract.get("physical_target_root_z_m", np.nan), 1.0):
+            raise ValueError("v12 checkpoint does not target a physical 1.000 m apex")
 
     policy = build_policy(state_dict)
     onnx_path = output_dir / "quadhopper_spatial_tracking_policy.onnx"
@@ -182,6 +209,25 @@ def main() -> None:
     shutil.copy2(Path(__file__).with_name("spatial_tracking_onnx_inference.py"), output_dir)
     shutil.copy2(Path(__file__).with_name("requirements-runtime.txt"), output_dir)
     shutil.copy2(Path(__file__).with_name("README_SPATIAL_TRACKING_EXPORT.md"), output_dir / "README.md")
+    observations = copy.deepcopy(OBSERVATIONS)
+    action_parameterization = contract.get("action_parameterization", "direct_motor")
+    if action_parameterization == "collective_residual_v1":
+        observations[7]["name"] = "last_five_raw_collective_residual_actions"
+        observations[7]["layout"] = "oldest_to_newest, collective, roll, pitch, yaw"
+        action_postprocess = (
+            "clip [collective,roll,pitch,yaw] to [-1,1]; "
+            "collective_u=0.5*(collective+1); residual=0.5*[roll,pitch,yaw] "
+            "@ [[1,1,-1],[-1,1,1],[-1,-1,-1],[1,-1,1]]^T; "
+            "uniformly scale the zero-mean residual to keep every motor in [0,1]; "
+            "u=collective_u+scaled_residual"
+        )
+    else:
+        observations[7]["name"] = (
+            "last_five_executed_post_limit_motor_actions"
+            if contract.get("version") == 12
+            else "last_five_raw_policy_actions"
+        )
+        action_postprocess = "clip actions to [-1,1], then u=clip(0.5*action+0.5,0,1)"
     metadata = {
         "source_checkpoint": str(checkpoint),
         "checkpoint_iteration": int(data.get("iter", -1)),
@@ -202,9 +248,14 @@ def main() -> None:
         },
         "normalization": "identity",
         "motor_order": ["F1", "F2", "F3", "F4"],
-        "action_postprocess": "clip actions to [-1,1], then u=clip(0.5*action+0.5,0,1)",
+        "action_parameterization": action_parameterization,
+        "action_postprocess": action_postprocess,
         "simulation_motor_time_constant_s": 0.0674,
-        "simulation_action_delay": "legacy setting 0; environment indexes action_history[-0], i.e. oldest of five slots after warm-up",
+        "simulation_action_delay": contract.get("action_delay", "legacy checkpoint contract"),
+        "simulation_action_history": contract.get("action_history", "raw policy actions"),
+        "simulation_deployment_action_shaping": contract.get(
+            "deployment_action_shaping", "not recorded"
+        ),
         "policy_excludes": [
             "state estimation",
             "waypoint queue",
@@ -215,7 +266,7 @@ def main() -> None:
         ],
         "onnx_opset": 18,
         "onnx_parity_max_abs_error": max_error,
-        "observations": OBSERVATIONS,
+        "observations": observations,
     }
     (output_dir / "policy_metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
