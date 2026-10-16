@@ -48,7 +48,7 @@ The planar QuadHopper uses a custom hybrid stance/flight model and PPO implement
 
 | Early MuJoCo rollout | Energy and limit-cycle diagnostics |
 |---|---|
-| <img src="docs/images/mujoco-hopper-2d.gif" alt="Early MuJoCo hopper"> | <img src="docs/images/ppo-energy-analysis.png" alt="MuJoCo energy analysis"><br><img src="docs/images/ppo-limit-cycle.png" alt="MuJoCo limit cycle"> |
+| <img src="docs/images/mujoco-hopper-2d.gif" alt="Early MuJoCo hopper" width="360"> | <img src="docs/images/ppo-energy-analysis.png" alt="MuJoCo energy analysis" width="230"><br><img src="docs/images/ppo-limit-cycle.png" alt="MuJoCo limit cycle" width="230"> |
 
 ## Repository layout
 
