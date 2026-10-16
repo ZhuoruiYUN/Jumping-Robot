@@ -9,10 +9,11 @@ SPEC = importlib.util.spec_from_file_location('quadhopper_actuator_contract', MO
 CONTRACT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTRACT)
 corrected_delay_history_index = CONTRACT.corrected_delay_history_index
+limit_motor_spread_preserve_collective = CONTRACT.limit_motor_spread_preserve_collective
 shape_deployment_motor_commands = CONTRACT.shape_deployment_motor_commands
 
 
-def shape(target_u, contact, root_z, root_vz):
+def shape(target_u, contact, root_z, root_vz, airborne_yaw_limit=140.0):
     return shape_deployment_motor_commands(
         target_u,
         is_contact=contact,
@@ -21,7 +22,7 @@ def shape(target_u, contact, root_z, root_vz):
         target_z=torch.full_like(root_z, 1.095),
         max_pwm=1000.0,
         max_pwm_spread=600.0,
-        max_airborne_yaw_diagonal_pwm_diff=140.0,
+        max_airborne_yaw_diagonal_pwm_diff=airborne_yaw_limit,
         max_grounded_yaw_diagonal_pwm_diff=220.0,
         height_brake_start_m=0.03,
         height_brake_full_m=0.23,
@@ -32,6 +33,16 @@ def shape(target_u, contact, root_z, root_vz):
 
 
 class ActuatorContractTest(unittest.TestCase):
+    def test_v15_yaw_envelope_is_opt_in(self):
+        args = (torch.tensor([[1.0, 0.0, 1.0, 0.0]]), torch.tensor([False]),
+                torch.tensor([0.8]), torch.tensor([0.0]))
+        old = shape(*args) * 1000.0
+        new = shape(*args, airborne_yaw_limit=220.0) * 1000.0
+        yaw = lambda p: .5 * (p[:, 0] + p[:, 2] - p[:, 1] - p[:, 3])
+        self.assertAlmostEqual(float(yaw(old)), 140.0)
+        self.assertAlmostEqual(float(yaw(new)), 220.0)
+        torch.testing.assert_close(new.mean(1), old.mean(1))
+
     def test_zero_delay_selects_newest_command(self):
         history = list(range(5))
         self.assertEqual(history[corrected_delay_history_index(0, len(history))], 4)
@@ -62,6 +73,23 @@ class ActuatorContractTest(unittest.TestCase):
             torch.tensor([0.5]),
         )
         self.assertLess(shaped.mean().item(), target_u.mean().item())
+
+    def test_spread_limit_preserves_collective_and_bounds(self):
+        target = torch.tensor([
+            [0.0, 1.0, 0.2, 0.9],
+            [0.30, 0.40, 0.45, 0.35],
+        ])
+        limited = limit_motor_spread_preserve_collective(target, 0.60)
+        torch.testing.assert_close(limited.mean(1), target.mean(1), atol=1.0e-7, rtol=0.0)
+        self.assertTrue(torch.all(limited.max(1).values - limited.min(1).values <= 0.600001))
+        torch.testing.assert_close(limited[1], target[1])
+        self.assertTrue(torch.all((limited >= 0.0) & (limited <= 1.0)))
+
+    def test_spread_limit_rejects_invalid_contract(self):
+        with self.assertRaises(ValueError):
+            limit_motor_spread_preserve_collective(torch.zeros(2, 3), 0.6)
+        with self.assertRaises(ValueError):
+            limit_motor_spread_preserve_collective(torch.zeros(2, 4), 1.1)
 
 
 if __name__ == '__main__':

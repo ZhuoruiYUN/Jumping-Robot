@@ -14,7 +14,12 @@ OUTPUT="$SCRIPT_DIR/outputs/tracking_recovery/isaac_40v1_stationary_1m_$STAMP"
   --max-turn-angle-deg 1 --zero-hop-probability 1 --target-height 1.0 \
   --episode-length-s 301 \
   --target-tolerance 0.05 --actuator-mode baseline --legacy-v11-contract \
-  --allow-compatible-checkpoint
+  --allow-compatible-checkpoint --control-diagnostics
 
-python "$SCRIPT_DIR/play_spatial_tracking_mujoco1.py" "$OUTPUT/single_env.csv" --target-height 1.0
+ANALYSIS_PYTHON="${QUADHOPPER_ANALYSIS_PYTHON:-/usr/bin/python3}"
+"$ANALYSIS_PYTHON" "$SCRIPT_DIR/play_spatial_tracking_mujoco1.py" \
+  "$OUTPUT/single_env.csv" --target-height 1.0
+python "$SCRIPT_DIR/tools/analyze_40v1_control_diagnostics.py" \
+  "$OUTPUT/control_diagnostics.csv" --output-dir "$OUTPUT/analysis/control_diagnostics" \
+  --focus-hops 299 300 301 302
 echo "[ISAAC-40V1] output=$OUTPUT"

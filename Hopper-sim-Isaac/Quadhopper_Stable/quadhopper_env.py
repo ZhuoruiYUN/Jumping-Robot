@@ -6,7 +6,6 @@ import math
 import csv
 from collections import deque
 from pathlib import Path
-from types import SimpleNamespace
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
@@ -24,6 +23,7 @@ from .my_hopper_cfg import MY_HOPPER_CFG
 from .agents.rsl_rl_ppo_cfg import QUADHOPPER_MAX_ITERATIONS, QUADHOPPER_NUM_STEPS_PER_ENV
 from .actuator_contract import (
     corrected_delay_history_index,
+    limit_motor_spread_preserve_collective,
     shape_deployment_motor_commands,
 )
 from .action_parameterization import collective_residual_to_motor_u
@@ -104,12 +104,27 @@ class QuadhopperEnvCfg(DirectRLEnvCfg):
     # Keep domain noise during training, but allow deterministic evaluation.
     observation_noise_std = 0.01
     randomize_dynamics = True
+    # Explicit 2026-10-11 mounted SysID spring-leg proxy. Historical runs stay reproducible.
+    sysid_20261011_plant = False
+    sysid_voltage_reference_v = 3.7
+    sysid_voltage_exponent = 1.44630397739629
+    sysid_yaw_kqf_m = 0.010
     randomize_action_delay = True
     # Legacy tasks retain the captured action/history semantics. A task that
     # targets the current deployment opts into these as one coupled contract.
     corrected_action_delay_indexing = False
     record_executed_action_history = False
     apply_deployment_action_shaping = False
+    # Task subclasses may apply a deployment-matched, phase-aware direct-motor
+    # envelope here.  The preserved baseline leaves both values at zero and
+    # therefore retains its original direct action path exactly.
+    deployment_launch_recovery_window_s = 0.0
+    deployment_launch_recovery_spread_limit_pwm = 0.0
+    deployment_launch_recovery_hold_s = 0.0
+    deployment_launch_recovery_spread_limit_end_pwm = 0.0
+    # Optional direct-motor safety constraint.  Unlike action scaling, this
+    # changes only the zero-mean differential and preserves collective.
+    collective_preserving_spread_limit_pwm = 0.0
     # Research-only training aid: supplies a symmetric collective lower bound
     # during the measured takeoff phases.  It is deliberately off by default
     # and must never be included in an exported deployment contract.
@@ -352,6 +367,16 @@ class QuadhopperEnv(DirectRLEnv):
 
         self.set_debug_vis(self.cfg.debug_vis)
 
+    def _task_shape_direct_motor_target_u(self, target_u: torch.Tensor) -> torch.Tensor:
+        """Optional task hook between delayed actions and deployed shaping.
+
+        The frozen baseline returns its direct motor command untouched.  A task
+        that declares an explicit deployment contract may override this hook
+        to apply an identical, collective-preserving actuator envelope in
+        training and on hardware.
+        """
+        return target_u
+
     # =========================================================
     # Isaac Lab core callbacks
     # =========================================================
@@ -425,31 +450,12 @@ class QuadhopperEnv(DirectRLEnv):
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
-        # TerrainImporterCfg("plane") resolves to Isaac's remote Grid USD.
-        # Training must not block or fail when that external asset endpoint is
-        # unavailable.  This local cuboid has the same flat z=0 contact
-        # surface and configured friction/restitution, while the grid below
-        # exactly reproduces TerrainImporter's plane env-origin layout.
-        num_envs = self.scene.cfg.num_envs
-        env_spacing = self.scene.cfg.env_spacing
-        num_rows = math.ceil(num_envs / int(math.sqrt(num_envs)))
-        num_cols = math.ceil(num_envs / num_rows)
-        rows, cols = torch.meshgrid(
-            torch.arange(num_rows, device=self.device),
-            torch.arange(num_cols, device=self.device),
-            indexing="ij",
-        )
-        env_origins = torch.zeros(num_envs, 3, device=self.device)
-        env_origins[:, 0] = -(rows.flatten()[:num_envs] - (num_rows - 1) / 2) * env_spacing
-        env_origins[:, 1] = (cols.flatten()[:num_envs] - (num_cols - 1) / 2) * env_spacing
-        self._terrain = SimpleNamespace(env_origins=env_origins)
-        ground_span = max(num_rows, num_cols) * env_spacing + 2.0 * env_spacing
-        ground_cfg = sim_utils.CuboidCfg(
-            size=(ground_span, ground_span, 0.02),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            physics_material=self.cfg.terrain.physics_material,
-        )
-        ground_cfg.func("/World/ground/local_plane", ground_cfg, translation=(0.0, 0.0, -0.01))
+        # Preserve the canonical Isaac Lab plane/Grid scene for both training
+        # and visualization.  This uses the existing terrain configuration;
+        # it does not modify any Isaac Sim global setting.
+        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
+        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
+        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
         self.scene.clone_environments(copy_from_source=False)
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
@@ -605,6 +611,12 @@ class QuadhopperEnv(DirectRLEnv):
             controlled_pwm = torch.where(ascent_phase.unsqueeze(-1), ascent_pwm, controlled_pwm)
             controlled_pwm = torch.where(descent_phase.unsqueeze(-1), descent_pwm, controlled_pwm)
             target_u = (controlled_pwm / 1000.0).clamp(0.0, 1.0)
+        if self.cfg.collective_preserving_spread_limit_pwm > 0.0:
+            target_u = limit_motor_spread_preserve_collective(
+                target_u,
+                self.cfg.collective_preserving_spread_limit_pwm / 1000.0,
+            )
+        target_u = self._task_shape_direct_motor_target_u(target_u)
         if self.cfg.apply_deployment_action_shaping:
             contact = self._robot.data.joint_pos[:, self._spring_joint_id] > 0.002
             target_height = getattr(self, "_active_target_height", None)
@@ -641,6 +653,37 @@ class QuadhopperEnv(DirectRLEnv):
         self._shaped_target_u.copy_(target_u)
         if self.cfg.record_executed_action_history:
             self._action_history.append((2.0 * target_u - 1.0).clone())
+        if self.cfg.sysid_20261011_plant:
+            # FC compare is an integer in [0,999]; voltage acts before the
+            # identified motor lag. The state is effective thrust, not PWM.
+            compare = torch.floor(target_u * 1000.0).clamp(0.0, 999.0)
+            duty = compare / 999.0
+            voltage = getattr(self, '_sysid_loaded_voltage_v', None)
+            if voltage is None:
+                voltage = torch.full((self.num_envs, 1), self.cfg.sysid_voltage_reference_v,
+                                     device=self.device, dtype=target_u.dtype)
+            beta = getattr(self, '_sysid_voltage_beta', self.cfg.sysid_voltage_exponent)
+            motor_target = duty * (voltage / self.cfg.sysid_voltage_reference_v).pow(beta)
+            alpha = -torch.expm1(-self._dt_policy / self.dr_tm)
+            self._motor_u = alpha * motor_target + (1.0 - alpha) * self._motor_u
+            u = self._motor_u
+            # The power network was trained on normalized PWM, not voltage-
+            # adjusted effective thrust state.
+            self._motor_u_history, self._soc_tracker = update_power_model_memory(
+                self._motor_u_history, self._soc_tracker, duty
+            )
+            F = (-0.34246762310623274 * u.square()
+                 + 0.8917171678850943 * u).clamp_min(0.0)
+            F = F * self.dr_thrust_scale / self.dr_mass_multi
+            self._sysid_last_motor_forces = F
+            arm = 0.230 / (2.0 * math.sqrt(2.0))
+            f1, f2, f3, f4 = F.unbind(dim=1)
+            yaw_kqf = getattr(self, '_sysid_yaw_kqf_m', self.cfg.sysid_yaw_kqf_m)
+            self._thrust[:, 0, 2] = F.sum(dim=1)
+            self._moment[:, 0, 0] = arm * (f1 + f4 - f2 - f3) / self.dr_inertia_multi[:, 0]
+            self._moment[:, 0, 1] = arm * (f1 + f2 - f3 - f4) / self.dr_inertia_multi[:, 1]
+            self._moment[:, 0, 2] = yaw_kqf * (-f1 + f2 - f3 + f4) / self.dr_inertia_multi[:, 2]
+            return
         alpha = self._dt_policy / (self.dr_tm + self._dt_policy)
         self._motor_u = alpha * target_u + (1.0 - alpha) * self._motor_u
         u = self._motor_u

@@ -94,6 +94,13 @@ Hopper-sim-Isaac/outputs/
 # ===== 项目特定（旧的、临时的）=====
 # 如果以后整理，可以加具体路径
 
+# Local Stage 2 experiment notes, run summaries and handoff documents.
+# Keep reproducible source and curated README files in Git instead.
+Hopper-sim-Isaac/PATH_FREE_STAGE2*
+Hopper-sim-Isaac/CURRENT_CONTEXT*.md
+Hopper-sim-Isaac/*HANDOFF*.md
+Hopper-sim-Isaac/*FINDINGS*.md
+
 # Generated Quadhopper figure sharing workspace; commit the zip package instead.
 analysis_outputs/quadhopper_figure_package_20260705/
 

@@ -30,6 +30,8 @@ class TwoHopRandomCommand:
         zero_hop_probability: float = 0.0,
         reverse_turn_probability: float = 0.0,
         reverse_turn_halfwidth_rad: float = math.pi / 6.0,
+        fixed_initial_heading_rad: float | None = None,
+        pair_scenario_groups: bool = False,
     ):
         self._validate_range("short", short_radius_min, short_radius_max)
         self._validate_range("long", long_radius_min, long_radius_max)
@@ -73,8 +75,8 @@ class TwoHopRandomCommand:
         self.zero_hop_probability = float(zero_hop_probability)
         if not 0.0 <= reverse_turn_probability <= 1.0:
             raise ValueError("reverse_turn_probability must be in [0, 1]")
-        if not 0.0 < reverse_turn_halfwidth_rad <= math.pi:
-            raise ValueError("reverse_turn_halfwidth_rad must be in (0, pi]")
+        if not 0.0 <= reverse_turn_halfwidth_rad <= math.pi:
+            raise ValueError("reverse_turn_halfwidth_rad must be in [0, pi]")
         if (
             reverse_turn_probability > 0.0
             and max_turn_angle_rad < math.pi - reverse_turn_halfwidth_rad
@@ -84,6 +86,10 @@ class TwoHopRandomCommand:
             )
         self.reverse_turn_probability = float(reverse_turn_probability)
         self.reverse_turn_halfwidth_rad = float(reverse_turn_halfwidth_rad)
+        if fixed_initial_heading_rad is not None and not math.isfinite(fixed_initial_heading_rad):
+            raise ValueError("fixed_initial_heading_rad must be finite when supplied")
+        self.fixed_initial_heading_rad = fixed_initial_heading_rad
+        self.pair_scenario_groups = bool(pair_scenario_groups)
         # Compatibility name consumed by the shared completion/reward logic.
         self.steps_per_revolution = int(successful_hops_per_episode)
 
@@ -94,6 +100,10 @@ class TwoHopRandomCommand:
         # geometric sequence always remains short, long, short, long.
         self.cycle_index = torch.zeros(self.num_envs, dtype=torch.long, device=device)
         self.route_index = torch.zeros(self.num_envs, dtype=torch.long, device=device)
+        self.pair_reset_count = torch.zeros_like(self.route_index)
+        # 0: unrestricted, 1: reversal, 2: exact-zero patterns.
+        self.pair_scenario = torch.zeros_like(self.route_index)
+        self.pair_zero_pattern = torch.full_like(self.route_index, -1)
 
     @staticmethod
     def _validate_range(name: str, lower: float, upper: float):
@@ -103,7 +113,8 @@ class TwoHopRandomCommand:
             )
 
     def _sample_offset(
-        self, count: int, radius_min: float, radius_max: float
+        self, count: int, radius_min: float, radius_max: float,
+        zero_probability: float | None = None,
     ) -> torch.Tensor:
         if self.hard_radius_probability > 0.0:
             # The lower interval replays already learned hops while the upper
@@ -122,47 +133,60 @@ class TwoHopRandomCommand:
             radius = radius_min + (radius_max - radius_min) * torch.rand(
                 count, device=self.device
             )
-        if self.zero_hop_probability > 0.0:
-            is_zero_hop = torch.rand(count, device=self.device) < self.zero_hop_probability
+        zero_probability = (
+            self.zero_hop_probability if zero_probability is None else zero_probability
+        )
+        if zero_probability > 0.0:
+            is_zero_hop = torch.rand(count, device=self.device) < zero_probability
             radius = torch.where(is_zero_hop, torch.zeros_like(radius), radius)
         heading = 2.0 * math.pi * torch.rand(count, device=self.device)
         return radius[:, None] * torch.stack(
             (torch.cos(heading), torch.sin(heading)), dim=-1
         )
 
-    def _sample_phase_offsets(self, is_short: torch.Tensor) -> torch.Tensor:
+    def _sample_phase_offsets(
+        self, is_short: torch.Tensor, zero_probability: float | None = None
+    ) -> torch.Tensor:
         """Sample one offset per environment from its assigned route phase."""
         offsets = torch.empty(len(is_short), 2, device=self.device)
         short_ids = is_short.nonzero(as_tuple=False).flatten()
         long_ids = (~is_short).nonzero(as_tuple=False).flatten()
         if len(short_ids) > 0:
             offsets[short_ids] = self._sample_offset(
-                len(short_ids), self.short_radius_min, self.short_radius_max
+                len(short_ids), self.short_radius_min, self.short_radius_max,
+                zero_probability,
             )
         if len(long_ids) > 0:
             offsets[long_ids] = self._sample_offset(
-                len(long_ids), self.long_radius_min, self.long_radius_max
+                len(long_ids), self.long_radius_min, self.long_radius_max,
+                zero_probability,
             )
         return offsets
 
     def _sample_phase_offsets_around(
-        self, is_short: torch.Tensor, reference_offsets: torch.Tensor
+        self, is_short: torch.Tensor, reference_offsets: torch.Tensor,
+        zero_probability: float | None = None,
+        reverse_probability: float | None = None,
     ) -> torch.Tensor:
         """Sample phase radii with headings near the preceding hop."""
-        offsets = self._sample_phase_offsets(is_short)
+        offsets = self._sample_phase_offsets(is_short, zero_probability)
         radii = torch.linalg.norm(offsets, dim=1)
         reference_heading = torch.atan2(reference_offsets[:, 1], reference_offsets[:, 0])
         heading_delta = self.max_turn_angle_rad * (
             2.0 * torch.rand(len(is_short), device=self.device) - 1.0
         )
-        if self.reverse_turn_probability > 0.0:
+        reverse_probability = (
+            self.reverse_turn_probability if reverse_probability is None
+            else reverse_probability
+        )
+        if reverse_probability > 0.0:
             # Keep the ordinary uniform distribution for broad coverage, but
             # add a controllable point mass around +/- 180 deg. Uniform
             # [-180, 180] otherwise makes near-reversal events too sparse for
             # far-hop learning.
             choose_reverse = (
                 torch.rand(len(is_short), device=self.device)
-                < self.reverse_turn_probability
+                < reverse_probability
             )
             reverse_magnitude = math.pi - self.reverse_turn_halfwidth_rad * torch.rand(
                 len(is_short), device=self.device
@@ -189,8 +213,57 @@ class TwoHopRandomCommand:
             else torch.zeros(count, dtype=torch.long, device=self.device)
         )
         first_is_short = (route_phase % 2) == 0
-        first_offset = self._sample_phase_offsets(first_is_short)
-        second_offset = self._sample_phase_offsets_around(~first_is_short, first_offset)
+        first_offset = self._sample_phase_offsets(
+            first_is_short, 0.0 if self.pair_scenario_groups else None
+        )
+        if self.fixed_initial_heading_rad is not None:
+            radii = torch.linalg.norm(first_offset, dim=1)
+            direction = torch.tensor(
+                (math.cos(self.fixed_initial_heading_rad), math.sin(self.fixed_initial_heading_rad)),
+                device=self.device,
+                dtype=first_offset.dtype,
+            )
+            first_offset = radii[:, None] * direction
+        second_offset = self._sample_phase_offsets_around(
+            ~first_is_short, first_offset,
+            zero_probability=0.0 if self.pair_scenario_groups else None,
+            reverse_probability=0.0 if self.pair_scenario_groups else None,
+        )
+        if self.pair_scenario_groups:
+            # Fixed environment buckets give 50/25/25 coverage at 1024 envs.
+            # Cycling the zero patterns also prevents a reset-heavy subset
+            # from seeing only one stationary transition.
+            scenario = (env_ids * 4 // self.num_envs).clamp(max=3)
+            reverse = scenario == 2
+            zero = scenario == 3
+            self.pair_scenario[env_ids] = torch.where(
+                reverse, 1, torch.where(zero, 2, 0)
+            )
+            self.pair_zero_pattern[env_ids] = -1
+            if reverse.any():
+                second_offset[reverse] = self._sample_phase_offsets_around(
+                    ~first_is_short[reverse], first_offset[reverse],
+                    zero_probability=0.0, reverse_probability=1.0,
+                )
+            if zero.any():
+                zero_ids = env_ids[zero]
+                pattern = (zero_ids + self.pair_reset_count[zero_ids]) % 3
+                self.pair_zero_pattern[zero_ids] = pattern
+                # 0: stationary -> stationary; 1: stationary -> moving;
+                # 2: moving -> stationary. A zero predecessor has no heading,
+                # so sample the moving leg's world heading uniformly.
+                first_offset[zero] = torch.where(
+                    (pattern != 2)[:, None], torch.zeros_like(first_offset[zero]),
+                    first_offset[zero],
+                )
+                zero_second = self._sample_phase_offsets(
+                    ~first_is_short[zero], zero_probability=0.0
+                )
+                second_offset[zero] = torch.where(
+                    (pattern == 1)[:, None], zero_second,
+                    torch.zeros_like(zero_second),
+                )
+            self.pair_reset_count[env_ids] += 1
         first = anchor + first_offset
         second = first + second_offset
         self.anchor_w[env_ids] = anchor

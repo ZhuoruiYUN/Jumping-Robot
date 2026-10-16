@@ -1,7 +1,9 @@
 """Isolated direct-motor PPO contract for current/next waypoint ablations."""
 import torch
 from isaaclab.utils import configclass
+from isaaclab.utils.math import euler_xyz_from_quat
 from .random_two_hop_env import PlannerRandomTwoHopEnv, PlannerRandomTwoHopEnvCfg
+from .failure_diagnostics import FailureDiagnostics
 from .tracking_metrics import TrackingMetrics
 
 
@@ -89,6 +91,10 @@ class TrackingABEnv(PlannerRandomTwoHopEnv):
     def __init__(self, cfg, **kwargs):
         super().__init__(cfg, **kwargs)
         self.tracking_metrics = TrackingMetrics(self.num_envs, self.device)
+        self.failure_diagnostics = (
+            FailureDiagnostics(self.num_envs, self.device)
+            if cfg.collect_tracking_metrics else None
+        )
 
     def _get_observations(self):
         obs = super()._get_observations()
@@ -101,6 +107,12 @@ class TrackingABEnv(PlannerRandomTwoHopEnv):
         target = self.commands.lookahead()[0].clone()
         direction = target - self.planner.positions_w[:, 0, :2]
         super()._update_cycle_events()
+        diagnostics = getattr(self, 'failure_diagnostics', None)
+        if diagnostics is not None:
+            diagnostics.note_events(
+                self.common_step_counter, self._touchdown_event,
+                self._liftoff_event, self._setup_touchdown_event,
+            )
         # Keep this diagnostic gate aligned with the configured hit contract.
         # Spatial tracking deliberately scores touchdown XY independently.
         if getattr(self.cfg, 'require_apex_tolerance_for_hit', True):
@@ -117,9 +129,66 @@ class TrackingABEnv(PlannerRandomTwoHopEnv):
             ids, self._setup_touchdown_event[ids], delta.norm(dim=1),
             (delta * d).sum(1), (delta[:, 0]*d[:, 1] - delta[:, 1]*d[:, 0]).abs(),
             self._settled_apex_height[ids], self._settled_apex_target[ids],
+            torch.rad2deg(torch.acos((1.0 - 2.0 * (
+                self._robot.data.root_quat_w[ids, 1].square()
+                + self._robot.data.root_quat_w[ids, 2].square()
+            )).clamp(-1.0, 1.0))),
         )
 
+    def _get_dones(self):
+        diagnostics = getattr(self, 'failure_diagnostics', None)
+        if diagnostics is None:
+            return super()._get_dones()
+        before = {
+            name: getattr(self, name).clone()
+            for name in ('_physical_death_total', '_tilt_death_total',
+                         '_low_height_death_total', '_far_xy_death_total',
+                         '_high_angvel_death_total')
+        }
+        died, timeout = super()._get_dones()
+        roll, pitch, _ = euler_xyz_from_quat(self._robot.data.root_quat_w)
+        root = self._robot.data.root_pos_w
+        target = self.commands.lookahead()[0]
+        spring = self._robot.data.joint_pos[:, self._spring_joint_id]
+        zeros = torch.zeros(self.num_envs, device=self.device)
+        diagnostics.capture(
+            self._physical_death_total > before['_physical_death_total'],
+            step=self.common_step_counter, step_dt=self.step_dt,
+            values={
+                'root_z_m': root[:, 2],
+                'root_vz_m_s': self._robot.data.root_lin_vel_w[:, 2],
+                'roll_deg': torch.rad2deg(roll),
+                'pitch_deg': torch.rad2deg(pitch),
+                'roll_rate_rad_s': self._robot.data.root_ang_vel_b[:, 0],
+                'pitch_rate_rad_s': self._robot.data.root_ang_vel_b[:, 1],
+                'spring_position_m': spring,
+                'target_distance_m': torch.linalg.norm(root[:, :2] - target, dim=1),
+                'in_contact': (spring > 0.002).float(),
+                'cycle_active': self._cycle_active.float(),
+                'moving_recovery_remaining_steps': getattr(
+                    self, '_moving_long_recovery_remaining', zeros
+                ),
+                'hard_environment': getattr(self, '_hardware_hard_mask', zeros),
+                'global_thrust_scale': getattr(
+                    self, '_hardware_global_thrust_scale', torch.ones_like(zeros)
+                ).reshape(-1),
+                'tilt_death': self._tilt_death_total > before['_tilt_death_total'],
+                'low_height_death': (
+                    self._low_height_death_total > before['_low_height_death_total']
+                ),
+                'far_xy_death': self._far_xy_death_total > before['_far_xy_death_total'],
+                'high_angvel_death': (
+                    self._high_angvel_death_total > before['_high_angvel_death_total']
+                ),
+            },
+        )
+        return died, timeout
+
     def _reset_idx(self, env_ids):
+        diagnostics = getattr(self, 'failure_diagnostics', None)
+        if diagnostics is not None:
+            ids = self._robot._ALL_INDICES if env_ids is None else env_ids
+            diagnostics.reset_episode(ids)
         if hasattr(self, 'tracking_metrics'):
             ids = self._robot._ALL_INDICES if env_ids is None else env_ids
             self.tracking_metrics.reset(ids)

@@ -16,6 +16,27 @@ def corrected_delay_history_index(delay_steps: int, history_length: int) -> int:
     return -1 - delay_steps
 
 
+def limit_motor_spread_preserve_collective(
+    target_u: torch.Tensor,
+    max_spread: float,
+) -> torch.Tensor:
+    """Limit four-motor differential authority without changing collective.
+
+    ``target_u`` is already bounded to [0, 1].  Scaling its zero-mean residual
+    toward the per-row collective therefore remains inside those bounds and
+    preserves the arithmetic mean exactly (up to floating-point roundoff).
+    """
+    if target_u.ndim != 2 or target_u.shape[1] != 4:
+        raise ValueError(f"Expected motor commands shaped (N, 4), got {target_u.shape}")
+    if not 0.0 <= max_spread <= 1.0:
+        raise ValueError("max_spread must be in [0, 1]")
+    collective = target_u.mean(dim=1, keepdim=True)
+    residual = target_u - collective
+    spread = target_u.max(dim=1, keepdim=True).values - target_u.min(dim=1, keepdim=True).values
+    scale = torch.clamp(max_spread / spread.clamp_min(1.0e-12), max=1.0)
+    return collective + residual * scale
+
+
 def shape_deployment_motor_commands(
     target_u: torch.Tensor,
     *,

@@ -1,120 +1,17 @@
-# Arbitrary-direction two-hop waypoint training
+# Current arbitrary-direction Stage 2 task
 
-This task replaces only the circular ground-waypoint generator. The robot
-USD, spring/contact dynamics, four motor actions, thrust/torque curves, motor
-lag, command delay, power model, 100 Hz controller, direct-collocation
-reference, reward implementation, and recurrent PPO architecture are inherited
-unchanged from the accepted planner-circular task.
+This directory implements the current path-free two-target observation and repeated-hop task in Isaac Sim. It also contains older route generators and diagnostic variants; those are historical experiments, not the selected V38 controller.
 
-## Route command
+## Training contract
 
-For each environment, let `X_0` be the reset position. The target sequence is
+- **Policy:** recurrent RSL-RL PPO with direct four-motor actions. `history_foot_v19` stacks six 56-value frames (current plus five previous) into a 336-value observation. The current and next ground targets are visible in the state, together with measured foot geometry.
+- **Route and height:** 0.12–0.50 m hops and a 1.0 m world-Z apex command. The training sampler includes arbitrary headings, reverse turns and zero-distance targets. The current task uses `--path-free-stage2-v3`; the older 0.5–1.0 m random-route curriculum and its 43-value observation are separate, historical tasks.
+- **Plant:** the 11 October 2026 mounted SysID update is enabled by `--sysid-20261011-plant`. It modifies the simulated mass/inertia and motor response, but retains a spring-leg proxy and does not prove real-hardware fidelity.
+- **Episodes:** V38 nominal and robust adaptation use `--two-hop-episode-v38` to reset after two hops. V38 chain short, mid, bridge and final remove that flag and use 12, 24, 40 and 61 s episode limits respectively.
+- **Scale:** completed formal V37–V40 training used 1,024 parallel environments and 256 policy steps per environment per PPO iteration. The selected V38 final-chain run completed 200 iterations after the shorter curriculum stages. Checkpoints are transferred as weights; optimizer state is not resumed across stages.
 
-```text
-X_1 = X_0 + r_short [cos(theta_1), sin(theta_1)]
-X_2 = X_1 + r_long  [cos(theta_2), sin(theta_2)]
-X_3 = X_2 + r_short [cos(theta_3), sin(theta_3)]
-...
-```
+The source entry points are `../run_tracking_recovery.py` and `../train_tracking_recovery.py`; V37–V40 shell wrappers provide the recorded parameters and use the installed Isaac Sim launcher. A later wrapper requires a completed local checkpoint from its prior stage. Generated checkpoints, manifests, evaluation JSON and local handoff documents are excluded from Git.
 
-where every heading is sampled independently and uniformly from `[0, 2 pi)`,
-`r_short ~ U(0.5, 0.8) m`, and `r_long ~ U(0.8, 1.0) m`. The command keeps a
-rolling two-point queue, so the policy and planner always receive both `P_t`
-and `P_(t+1)`. A new point is appended only after a successful landing.
+## Result and limit
 
-The task retains the 43-D v22 policy interface:
-
-```text
-stable observations (37)
-+ body-frame XY error to P_t (2), divided by 0.75 m
-+ body-frame XY error to P_(t+1) (2), divided by 0.75 m
-+ current and next absolute apex commands (2), divided by 2.0 m
-```
-
-The input width and ordering are checkpoint-compatible with v22, but the XY
-command distribution and scale are intentionally different. Transfer the v22
-policy with a reset optimizer; do not use exact optimizer resume across tasks.
-
-## Train and play
-
-Train the distance curriculum one stage at a time. Advance only after the
-monitor reports `PASS`:
-
-| Stage | Both hop ranges | Fixed action std |
-|---|---:|---:|
-| `direction` | 0.22--0.30 m | 0.12 |
-| `medium` | 0.30--0.50 m | 0.10 |
-| `short` | 0.50--0.80 m | 0.08 |
-| `full` | short 0.50--0.80 m, long 0.80--1.00 m | 0.06 |
-
-The current random-route campaign uses a fixed 1.00 m apex for both hops so
-that height alternation does not add difficulty while the XY route is learned.
-The wrapper defaults to `--height_stage high`; pass `--height_stage alternate`
-explicitly only when height alternation is wanted again.
-
-To train the requested full two-hop geometry directly, with the first circle
-at 0.50--0.80 m and the second circle at 0.80--1.00 m:
-
-```bash
-cd /home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac
-
-bash run_train_random_curriculum.sh full 256 \
-  --iterations 300 \
-  --checkpoint /path/to/a/compatible/model_N.pt
-```
-
-Each stage gets an isolated `quadhopper_planner_random_two_hop_v24_*` log
-namespace. Transfer the selected checkpoint to the next stage without
-`--resume_optimizer`; exact optimizer resume is only for continuing the same
-stage. Check progress with:
-
-```bash
-/home/terry/Documents/isaacsim/isaac-sim-standalone-5.1.0-linux-x86_64/python.sh \
-  monitor_random_two_hop.py \
-  logs/rsl_rl/quadhopper_planner_random_two_hop_v24_direction_alternate_070_100 \
-  --stage direction
-```
-
-Once a distance stage has learned the route but still lacks consecutive
-first-attempt hits, run its isolated accuracy sub-stage. A miss terminates the
-episode, landing penalties are tightened, and action std is fixed at 0.06:
-
-```bash
-bash run_train_random_curriculum.sh direction 256 \
-  --accuracy_finetune \
-  --iterations 200 \
-  --checkpoint logs/rsl_rl/quadhopper_planner_random_two_hop_v24_direction_alternate_070_100/<run>/model_<N>.pt
-```
-
-Accuracy logs use the `quadhopper_planner_random_two_hop_v25_*_accuracy_*`
-namespace. Do not expand distance until deterministic evaluation confirms the
-stage gate.
-
-Playback uses the same generator and draws both sampled-radius circles:
-
-```bash
-/home/terry/Documents/isaacsim/isaac-sim-standalone-5.1.0-linux-x86_64/python.sh \
-  play_planner_circular.py \
-  --route random_two_hop \
-  --distance_stage full \
-  --height_stage high \
-  --height_high 1.00 \
-  --num_envs 1 \
-  --checkpoint /path/to/a/compatible/model_N.pt
-```
-
-`direction` is deliberately a small-radius warm-up: it overrides both circles
-to 0.22--0.30 m. It must not be used when visually checking the final
-0.50--0.80 m / 0.80--1.00 m geometry. Playback prints both configured ranges
-and the actually sampled distances at startup.
-
-Useful selection metrics are `Metrics/episode_touchdown_error_m`,
-`Metrics/target_hit_rate`, the short/long error and hit-rate splits,
-`Metrics/max_consecutive_hits`, `Metrics/route_completion`, and the low/high
-apex errors. The inherited `Metrics/circle_completion` key is retained as an
-alias so existing dashboards do not break; in this task it means completion of
-58 consecutive arbitrary-direction targets, not a circle.
-
-Before a full run, instantiate 1--4 environments and verify that the requested
-0.8--1.0 m low-apex hops are physically feasible with the preserved hardware
-model. The kinematic planner itself does not enforce motor or contact limits.
+The selected research checkpoint is V38 final-chain `model_199.pt`. Under seed 583 with 100% wider hardware stress, its strict foot-pair 10 cm plus 1.0 m apex rates were 54.75% arbitrary-direction, 77.15% in-place and 68.38% reverse during 61 s continuous tests. Each scenario used 16 environments × 30,000 policy steps. A 301 s stress run gave 52.60%, 82.25% and 74.17% respectively. These are simulation measurements, not hardware validation or a deployment qualification. See the [repository README](../../README.md) for the training-stage and evaluation-condition table.

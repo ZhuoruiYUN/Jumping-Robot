@@ -11,6 +11,7 @@ from Quadhopper_Planner_Circular.planner_circular_env import (
     PlannerCircularEnvCfg,
 )
 
+from .direction_curriculum import directional_command_values
 from .waypoint_command import TwoHopRandomCommand
 
 
@@ -37,6 +38,9 @@ class PlannerRandomTwoHopEnvCfg(PlannerCircularEnvCfg):
     zero_hop_probability = 0.0
     reverse_turn_probability = 0.0
     reverse_turn_halfwidth_deg = 30.0
+    # Evaluation-only deterministic route anchor.  None preserves random
+    # initial headings; 0.0 gives world +X for a clean pitch/roll diagnostic.
+    fixed_initial_heading_deg: float | None = None
     # A random route is a sequence of commanded landings, not a collection of
     # goals that may be retried indefinitely.  This makes every measured hit
     # rate a first-attempt hit rate and guarantees P_(t+1) becomes the next
@@ -44,6 +48,7 @@ class PlannerRandomTwoHopEnvCfg(PlannerCircularEnvCfg):
     advance_route_on_miss = True
     restart_two_hop_pair = False
     randomize_route_phase = False
+    pair_scenario_groups = False
     distance_curriculum_iterations = 0.0
     distance_curriculum_iteration_offset = 0.0
     curriculum_short_radius_min = 0.30
@@ -51,6 +56,14 @@ class PlannerRandomTwoHopEnvCfg(PlannerCircularEnvCfg):
     curriculum_long_radius_min = 0.30
     curriculum_long_radius_max = 0.50
     curriculum_max_turn_angle_deg = 30.0
+    # Direction curriculum is deliberately independent of the distance
+    # curriculum.  It permits a proven short/long hopping policy to retain
+    # its distance distribution while progressively learning wider signed
+    # turns, exact in-place hops, and eventually near-180 degree reversals.
+    # A zero duration preserves every historical task unchanged.
+    direction_curriculum_iterations = 0.0
+    direction_curriculum_start_turn_angle_deg = 30.0
+    direction_curriculum_start_zero_hop_probability = 0.0
     # When True, distance_curriculum_iterations counts completed hops per
     # environment instead of environment steps.  This matches the hop-latched
     # Semi-MDP trainer, whose updates consume only a few hundred steps but
@@ -101,6 +114,9 @@ class PlannerRandomTwoHopEnv(PlannerCircularEnv):
             self.cfg.zero_hop_probability,
             self.cfg.reverse_turn_probability,
             math.radians(self.cfg.reverse_turn_halfwidth_deg),
+            (None if self.cfg.fixed_initial_heading_deg is None
+             else math.radians(self.cfg.fixed_initial_heading_deg)),
+            self.cfg.pair_scenario_groups,
         )
 
     def _sync_distance_curriculum(self):
@@ -158,6 +174,36 @@ class PlannerRandomTwoHopEnv(PlannerCircularEnv):
             lerp(self.cfg.curriculum_max_turn_angle_deg, self.cfg.max_turn_angle_deg)
         )
 
+    def _sync_direction_curriculum(self):
+        """Synchronize task-only direction difficulty at each new command.
+
+        Reverse samples are kept disabled until the current ordinary turn
+        interval contains the configured reverse band.  This prevents an
+        invalid early curriculum state such as a 25-degree task suddenly
+        generating a 180-degree reversal.
+        """
+        if (
+            not hasattr(self, "commands")
+            or self.cfg.direction_curriculum_iterations <= 0.0
+        ):
+            return
+        iteration = float(getattr(self, "common_step_counter", 0)) / max(
+            self.cfg.curriculum_steps_per_iteration, 1.0
+        )
+        current_turn, current_zero, current_reverse = directional_command_values(
+            iteration=iteration,
+            duration_iterations=self.cfg.direction_curriculum_iterations,
+            start_turn_deg=self.cfg.direction_curriculum_start_turn_angle_deg,
+            final_turn_deg=self.cfg.max_turn_angle_deg,
+            start_zero_probability=self.cfg.direction_curriculum_start_zero_hop_probability,
+            final_zero_probability=self.cfg.zero_hop_probability,
+            final_reverse_probability=self.cfg.reverse_turn_probability,
+            reverse_halfwidth_deg=self.cfg.reverse_turn_halfwidth_deg,
+        )
+        self.commands.max_turn_angle_rad = math.radians(current_turn)
+        self.commands.zero_hop_probability = current_zero
+        self.commands.reverse_turn_probability = current_reverse
+
     def _update_cycle_events(self):
         # Snapshot the geometric phase because the parent consumes the target
         # immediately after touchdown.
@@ -184,6 +230,7 @@ class PlannerRandomTwoHopEnv(PlannerCircularEnv):
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         self._sync_distance_curriculum()
+        self._sync_direction_curriculum()
         pair_diagnostics = {}
         if env_ids is not None and hasattr(self, "_pair_attempts"):
             pair_diagnostics = {
@@ -200,6 +247,12 @@ class PlannerRandomTwoHopEnv(PlannerCircularEnv):
         for name, value in pair_diagnostics.items():
             self.extras["log"]["Diagnostics/" + name] = value
         if hasattr(self, "commands"):
+            self.extras["log"]["Curriculum/short_radius_min_m"] = (
+                self.commands.short_radius_min
+            )
+            self.extras["log"]["Curriculum/short_radius_max_m"] = (
+                self.commands.short_radius_max
+            )
             self.extras["log"]["Curriculum/long_radius_min_m"] = (
                 self.commands.long_radius_min
             )
@@ -228,6 +281,7 @@ class PlannerRandomTwoHopEnv(PlannerCircularEnv):
 
     def _advance_route(self, env_ids: torch.Tensor):
         self._sync_distance_curriculum()
+        self._sync_direction_curriculum()
         super()._advance_route(env_ids)
 
     def _lookahead_error_b(self) -> tuple[torch.Tensor, torch.Tensor]:

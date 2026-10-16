@@ -1,0 +1,406 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-11",
+  "purpose": "Isaac/PPO handoff suggestions, not executable Isaac API configuration",
+  "range_semantics": "Engineering exploration; neither statistical confidence intervals nor physical bounds",
+  "evidence_classes": {
+    "A": "Project model sensitivity / repeated experiments; systematic errors remain",
+    "B": "Unmeasured engineering robustness starting range"
+  },
+  "plant_status": "engineering_initialization; mounted angular and yaw dynamic validation not passed",
+  "motor_model": {
+    "k2_N": -0.34246762310623274,
+    "k1_N": 0.8917171678850943,
+    "k0_N": 0,
+    "voltage_reference_V": 3.7,
+    "dynamics": "dx_i/dt=(u_i*(V/3.7)^beta-x_i)/tau_i; F_i=gain_i*(k2*x_i^2+k1*x_i)",
+    "actual_pwm_definition": "FC compare / 999",
+    "near_zero_and_full_throttle_steady_state_unidentified": true
+  },
+  "physical": {
+    "mass_mounted": {
+      "nominal": 0.194,
+      "range": [
+        0.19,
+        0.198
+      ],
+      "unit": "kg",
+      "evidence": "B",
+      "sampling": "episode_uniform"
+    },
+    "mass_bare_separate_scenario": {
+      "nominal": 0.1544,
+      "range": [
+        0.151,
+        0.158
+      ],
+      "unit": "kg",
+      "evidence": "B",
+      "sampling": "episode_uniform",
+      "note": "Bare inertia not independently identified"
+    },
+    "Ixx_mounted": {
+      "nominal": 0.0011,
+      "range": [
+        0.0009,
+        0.0013
+      ],
+      "unit": "kg*m^2",
+      "evidence": "A",
+      "sampling": "episode_uniform"
+    },
+    "Iyy_mounted": {
+      "nominal": 0.0012,
+      "range": [
+        0.001,
+        0.0016
+      ],
+      "unit": "kg*m^2",
+      "evidence": "A",
+      "sampling": "episode_uniform"
+    },
+    "Izz_mounted": {
+      "nominal": 0.00065,
+      "range": [
+        0.0006,
+        0.0008
+      ],
+      "unit": "kg*m^2",
+      "evidence": "A",
+      "sampling": "episode_uniform",
+      "note": "Apparent suspension-axis prior; COM-axis correspondence unverified"
+    },
+    "principal_axis_small_rotation": {
+      "nominal": 0,
+      "range": [
+        -2,
+        2
+      ],
+      "unit": "deg",
+      "evidence": "B",
+      "sampling": "episode_uniform",
+      "note": "Rotate an admissible diagonal tensor; nominal axes unmeasured"
+    },
+    "K_Q_over_F": {
+      "nominal": 0.01,
+      "range": [
+        0.005,
+        0.016
+      ],
+      "unit": "m",
+      "evidence": "A",
+      "sampling": "episode_log_uniform",
+      "validated_value": null
+    },
+    "common_motor_tau": {
+      "nominal": 0.07069769079261506,
+      "range": [
+        0.06,
+        0.08
+      ],
+      "unit": "s",
+      "evidence": "A",
+      "sampling": "episode_uniform"
+    },
+    "thrust_common_multiplier": {
+      "nominal": 1,
+      "range": [
+        0.9,
+        1.1
+      ],
+      "unit": "ratio",
+      "evidence": "B",
+      "sampling": "episode_uniform"
+    },
+    "thrust_channel_relative_multiplier": {
+      "nominal": 1,
+      "range": [
+        0.95,
+        1.05
+      ],
+      "unit": "ratio",
+      "evidence": "B",
+      "sampling": "episode_uniform",
+      "normalization": "mean=1; enforce bounds after normalization"
+    },
+    "torque_ratio_channel_relative_multiplier": {
+      "nominal": 1,
+      "range": [
+        0.95,
+        1.05
+      ],
+      "unit": "ratio",
+      "evidence": "B",
+      "sampling": "episode_uniform",
+      "normalization": "mean=1; fixed spin directions"
+    },
+    "tau_channel_relative_multiplier": {
+      "nominal": 1,
+      "range": [
+        0.95,
+        1.05
+      ],
+      "unit": "ratio",
+      "evidence": "B",
+      "sampling": "episode_uniform",
+      "combined_tau_range_s": [
+        0.057,
+        0.084
+      ]
+    },
+    "loaded_voltage": {
+      "nominal": 3.7,
+      "range": [
+        3.5,
+        4.0
+      ],
+      "unit": "V",
+      "evidence": "A",
+      "sampling": "episode_start_then_smooth_sag",
+      "note": "Not iid per physics step; below 3.5 is extrapolation"
+    },
+    "voltage_exponent": {
+      "nominal": 1.44630397739629,
+      "range": [
+        1.3,
+        1.6
+      ],
+      "unit": "dimensionless",
+      "evidence": "B",
+      "sampling": "episode_uniform"
+    },
+    "bare_effective_vertical_drag": {
+      "nominal": 0.06627238339419442,
+      "range": [
+        0.04,
+        0.09
+      ],
+      "unit": "N*s/m",
+      "evidence": "B",
+      "sampling": "episode_uniform",
+      "mounted_transfer_validated": false
+    },
+    "com_offset_xy_from_measured_nominal": {
+      "nominal": null,
+      "range": [
+        -0.005,
+        0.005
+      ],
+      "unit": "m",
+      "evidence": "B",
+      "sampling": "episode_uniform",
+      "requires_nominal_measurement": true
+    },
+    "com_offset_z_from_measured_nominal": {
+      "nominal": null,
+      "range": [
+        -0.01,
+        0.01
+      ],
+      "unit": "m",
+      "evidence": "B",
+      "sampling": "episode_uniform",
+      "requires_nominal_measurement": true
+    },
+    "horizontal_external_force": {
+      "nominal": 0,
+      "range": [
+        -0.02,
+        0.02
+      ],
+      "unit": "N per axis",
+      "evidence": "B",
+      "sampling": "slowly_varying_optional"
+    }
+  },
+  "timing": {
+    "policy_period_s": 0.01,
+    "fc_period": {
+      "nominal": 0.00505,
+      "range": [
+        0.005,
+        0.0051
+      ],
+      "unit": "s",
+      "evidence": "A",
+      "sampling": "episode_uniform"
+    },
+    "additional_transport_delay": {
+      "nominal": null,
+      "range": [
+        0,
+        0.015
+      ],
+      "unit": "s",
+      "evidence": "B",
+      "sampling": "episode_uniform",
+      "note": "No direct one-way delay measurement; exclude motor lag"
+    },
+    "transport_jitter_sigma": {
+      "nominal": 0,
+      "range": [
+        0,
+        0.003
+      ],
+      "unit": "s",
+      "evidence": "B",
+      "sampling": "per_action_bounded",
+      "jitter_bounds_s": [
+        -0.006,
+        0.006
+      ],
+      "negative_total_delay": "clip to zero"
+    },
+    "policy_action_missing_probability": {
+      "nominal": 0,
+      "range": [
+        0,
+        0.01
+      ],
+      "unit": "probability per 100Hz action",
+      "evidence": "B",
+      "sampling": "episode_uniform",
+      "on_missing": "hold latest; preserve firmware timeout"
+    },
+    "optional_short_action_blackout": {
+      "nominal": 0,
+      "range": [
+        0,
+        0.02
+      ],
+      "unit": "s",
+      "evidence": "B",
+      "sampling": "stress_test",
+      "note": "Do not enable concurrently with maximum packet drop initially"
+    },
+    "firmware_command_timeout_s": 0.1,
+    "observed_rf_max_rt_fraction": 5.079e-05,
+    "observed_rf_max_rt_not_equal_to_policy_drop_probability": true,
+    "cached_command_age_not_true_transport_latency": true
+  },
+  "sensors": {
+    "gyro_white_noise_sigma": {
+      "nominal": null,
+      "range": [
+        0.005,
+        0.025
+      ],
+      "unit": "rad/s per axis",
+      "evidence": "B",
+      "sampling": "sigma_per_episode_noise_per_sensor_sample",
+      "injection": "before actual sensor filters"
+    },
+    "residual_gyro_bias": {
+      "nominal": 0,
+      "range": [
+        -0.01,
+        0.01
+      ],
+      "unit": "rad/s per axis",
+      "evidence": "B",
+      "sampling": "episode_uniform"
+    },
+    "accelerometer_white_noise_sigma": {
+      "nominal": null,
+      "range": [
+        0.1,
+        0.5
+      ],
+      "unit": "m/s^2 per axis",
+      "evidence": "B",
+      "sampling": "sigma_per_episode_noise_per_sensor_sample",
+      "colored_vibration_identified": false
+    },
+    "vicon_position_noise_sigma": {
+      "nominal": null,
+      "range": [
+        0.001,
+        0.003
+      ],
+      "unit": "m per axis",
+      "evidence": "B",
+      "sampling": "sigma_per_episode_noise_per_frame"
+    },
+    "vicon_orientation_noise_sigma": {
+      "nominal": null,
+      "range": [
+        0.1,
+        0.3
+      ],
+      "unit": "deg per small-rotation axis",
+      "evidence": "B",
+      "sampling": "sigma_per_episode_noise_per_frame",
+      "quaternion_method": "compose rotation then normalize"
+    },
+    "imu_mount_error": {
+      "nominal": 0,
+      "range": [
+        -1,
+        1
+      ],
+      "unit": "deg per axis",
+      "evidence": "B",
+      "sampling": "episode_uniform",
+      "requires_nominal_extrinsic": true
+    },
+    "noise_estimates_independently_calibrated": false
+  },
+  "contact_and_spring": {
+    "identified_from_current_flight_data": false,
+    "spring_k0_N_per_m": null,
+    "stiffness_multiplier_initial": [
+      0.8,
+      1.2
+    ],
+    "stiffness_multiplier_extended": [
+      0.7,
+      1.3
+    ],
+    "damping_ratio_engineering": [
+      0.1,
+      0.4
+    ],
+    "damping_formula": "c=2*zeta*sqrt(k*m_eff)",
+    "travel_or_rest_length_multiplier": [
+      0.98,
+      1.02
+    ],
+    "friction_engineering": [
+      0.4,
+      0.9
+    ],
+    "restitution_engineering": [
+      0,
+      0.2
+    ],
+    "requires_nominal_geometry_preload_limits_and_contact_validation": true
+  },
+  "constraints": [
+    "Inertia tensor SPD and principal inertia triangle inequalities; reject invalid joint samples",
+    "Do not treat suspended apparent Izz as a independently calibrated COM inertia",
+    "Physical plant parameters and legacy FC control/mixer parameters are separate",
+    "Do not directly replace legacy PWM-squared yaw coefficient with KQ/F in metres",
+    "Thrust scale multiplies whole curve; preserve nonnegative monotone output in the use domain",
+    "Use one shared bus voltage and episode-fixed channel parameters",
+    "Mass/COM/inertia variations should be generated coherently where geometry is known",
+    "Avoid applying Isaac automatic inertia mass scaling and independent inertia setting twice",
+    "Motor tau is not a pure transport delay",
+    "Hold latest action during missing updates; preserve true command timeout semantics",
+    "No arbitrary randomization of current controller gains, actuator order, spin signs, CRC or safety logic"
+  ],
+  "curriculum": {
+    "initial_relative_width_about_nominal": 0.05,
+    "initial_yaw_K_m": [
+      0.008,
+      0.012
+    ],
+    "then_expand_to_documented_ranges": true,
+    "validate_fixed_nominal_and_boundary_cases": true
+  },
+  "source_reports": [
+    "analysis_yaw_six_trials_20261011/REPORT.md",
+    "analysis_motor_identification_20261011/REPORT.md",
+    "analysis_inertia_mounted_20261011/REPORT.md",
+    "analysis_yaw_enhanced_20261011/REPORT.md"
+  ]
+}

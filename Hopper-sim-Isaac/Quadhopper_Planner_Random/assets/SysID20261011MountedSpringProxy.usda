@@ -1,0 +1,17 @@
+#usda 1.0
+(
+    defaultPrim = "Drone"
+    subLayers = [@../../Quadhopper_Stable/model/OriginJumpHopperAsset.usda@]
+)
+
+# Sensitivity-only proxy. The SysID source measures a 194 g rigid mounted-leg
+# vehicle, while the inherited asset still contains the unvalidated spring leg.
+# Keep its 0.010 kg numerical leg mass, assigning 0.184 kg to Body for 0.194 kg
+# total. As in the inherited asset, the whole-vehicle inertia is approximated
+# at Body; this is not a rigid-leg or contact-validated model.
+over "Drone" {
+    over "Body" {
+        float physics:mass = 0.184
+        float3 physics:diagonalInertia = (0.0011, 0.0012, 0.00065)
+    }
+}

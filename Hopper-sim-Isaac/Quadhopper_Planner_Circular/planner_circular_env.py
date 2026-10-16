@@ -149,6 +149,10 @@ class PlannerCircularEnvCfg(QuadhopperEnvCfg):
     # reward the two physical objectives separately.
     require_minimum_apex_for_hit = True
     require_apex_tolerance_for_hit = False
+    # A specialized task may require the measured peak to cross the command
+    # from below.  The historic symmetric apex-tolerance contract remains the
+    # default for every existing task.
+    require_apex_at_or_above_target_for_hit = False
     gate_touchdown_rewards_by_apex = False
     gate_dense_xy_rewards_by_apex = False
     low_apex_touchdown_penalty_scale = 0.0
@@ -198,6 +202,14 @@ class PlannerCircularEnvCfg(QuadhopperEnvCfg):
     airborne_yaw_penalty_scale = 0.0
     airborne_yaw_rate_penalty_scale = 0.0
     airborne_action_spread_penalty_scale = 0.0
+    # Direction-aware flight stability.  Unlike the inherited attitude cost,
+    # this leaves the tilt component toward the active XY target unpenalized
+    # and penalizes only the cross-track component.  Thus a long hop may use
+    # pitch/roll as required by its heading without learning unnecessary sway.
+    airborne_cross_track_tilt_penalty_scale = 0.0
+    airborne_cross_track_tilt_penalty_start = 0.05
+    airborne_cross_track_velocity_penalty_scale = 0.0
+    airborne_cross_track_velocity_penalty_start_mps = 0.12
     airborne_spring_pos_penalty_scale = 0.0
     airborne_spring_vel_penalty_scale = 0.0
     # Restrict the additional flight-stability shaping to the geometrically
@@ -372,6 +384,8 @@ class PlannerCircularEnv(QuadhopperEnv):
         self._physical_death_total = torch.zeros(self.num_envs, device=self.device)
         self._low_height_death_total = torch.zeros_like(self._physical_death_total)
         self._tilt_death_total = torch.zeros_like(self._physical_death_total)
+        self._far_xy_death_total = torch.zeros_like(self._physical_death_total)
+        self._high_angvel_death_total = torch.zeros_like(self._physical_death_total)
         self._disturbance_force = torch.zeros(self.num_envs, 3, device=self.device)
         self._disturbance_torque = torch.zeros(self.num_envs, 3, device=self.device)
         self._disturbance_timer = torch.zeros(self.num_envs, device=self.device)
@@ -404,6 +418,8 @@ class PlannerCircularEnv(QuadhopperEnv):
             "airborne_yaw",
             "airborne_yaw_rate",
             "airborne_action_spread",
+            "airborne_cross_track_tilt",
+            "airborne_cross_track_velocity",
             "airborne_spring_pos",
             "airborne_spring_vel",
             "descent_velocity_error",
@@ -994,6 +1010,11 @@ class PlannerCircularEnv(QuadhopperEnv):
             hit_mask = error < self._current_target_tolerance()
             if self.cfg.require_minimum_apex_for_hit:
                 hit_mask &= valid_apex
+            if self.cfg.require_apex_at_or_above_target_for_hit:
+                hit_mask &= (
+                    self._cycle_max_z[touchdown_ids]
+                    >= self._active_target_height[touchdown_ids]
+                )
             hit_mask &= apex_within_tolerance
             prepared_mask = (
                 hit_mask
@@ -1404,6 +1425,41 @@ class PlannerCircularEnv(QuadhopperEnv):
         airborne_action_spread = airborne_mask * torch.square(
             torch.relu(motor_spread - self.cfg.airborne_action_spread_penalty_start)
         )
+        target_direction = self._cycle_takeoff_direction_w
+        target_direction_norm = torch.linalg.norm(target_direction, dim=1)
+        target_direction_valid = target_direction_norm > 1.0e-6
+        target_direction = target_direction / target_direction_norm.unsqueeze(1).clamp_min(1.0e-6)
+        cross_track_direction = torch.stack(
+            (-target_direction[:, 1], target_direction[:, 0]), dim=1
+        )
+        # World XY projection of the body +Z (thrust) axis.  For a world +X
+        # command near yaw=0, this is respectively the desired pitch component
+        # and the undesired roll component.
+        qw, qx, qy, qz = q.unbind(dim=1)
+        thrust_axis_xy = torch.stack((
+            2.0 * (qx * qz + qw * qy),
+            2.0 * (qy * qz - qw * qx),
+        ), dim=1)
+        cross_track_tilt = torch.sum(thrust_axis_xy * cross_track_direction, dim=1)
+        airborne_cross_track_tilt = (
+            airborne_mask * target_direction_valid.float() * torch.square(
+                torch.relu(
+                    torch.abs(cross_track_tilt)
+                    - self.cfg.airborne_cross_track_tilt_penalty_start
+                )
+            )
+        )
+        cross_track_velocity = torch.sum(
+            self._robot.data.root_lin_vel_w[:, :2] * cross_track_direction, dim=1
+        )
+        airborne_cross_track_velocity = (
+            airborne_mask * target_direction_valid.float() * torch.square(
+                torch.relu(
+                    torch.abs(cross_track_velocity)
+                    - self.cfg.airborne_cross_track_velocity_penalty_start_mps
+                )
+            )
+        )
         spring_pos = torch.abs(self._robot.data.joint_pos[:, self._spring_joint_id])
         spring_vel = torch.abs(self._robot.data.joint_vel[:, self._spring_joint_id])
         airborne_spring_pos = airborne_mask * torch.square(
@@ -1518,6 +1574,14 @@ class PlannerCircularEnv(QuadhopperEnv):
             * stability_phase_mask
             * self.cfg.airborne_action_spread_penalty_scale
             * self.step_dt,
+            "airborne_cross_track_tilt": airborne_cross_track_tilt
+            * stability_phase_mask
+            * self.cfg.airborne_cross_track_tilt_penalty_scale
+            * self.step_dt,
+            "airborne_cross_track_velocity": airborne_cross_track_velocity
+            * stability_phase_mask
+            * self.cfg.airborne_cross_track_velocity_penalty_scale
+            * self.step_dt,
             "airborne_spring_pos": airborne_spring_pos
             * stability_phase_mask
             * self.cfg.airborne_spring_pos_penalty_scale
@@ -1603,6 +1667,7 @@ class PlannerCircularEnv(QuadhopperEnv):
         # physical death mask here so this task's configurable limit affects
         # termination, not just the diagnostic counters below.
         task_died = low_height_death | tilt_death
+        far_xy = torch.zeros_like(task_died)
         if self.cfg.terminate_far_xy_distance > 0.0:
             p_t, _ = self.commands.lookahead()
             if torch.any(self._initial_drop_pending):
@@ -1616,6 +1681,7 @@ class PlannerCircularEnv(QuadhopperEnv):
                 > self.cfg.terminate_far_xy_distance
             )
             task_died = task_died | far_xy
+        high_angvel = torch.zeros_like(task_died)
         if self.cfg.terminate_angvel_norm > 0.0:
             high_angvel = (
                 torch.linalg.norm(self._robot.data.root_ang_vel_b, dim=1)
@@ -1626,6 +1692,8 @@ class PlannerCircularEnv(QuadhopperEnv):
         self._physical_death_total += task_died.float()
         self._low_height_death_total += (task_died & low_height_death).float()
         self._tilt_death_total += (task_died & tilt_death).float()
+        self._far_xy_death_total += (task_died & far_xy).float()
+        self._high_angvel_death_total += (task_died & high_angvel).float()
         completed = self._consecutive_hits >= self.commands.steps_per_revolution
         pair_completed = (
             self._final_touchdown_event

@@ -34,6 +34,40 @@ class RandomTwoHopCommandTest(unittest.TestCase):
         self.assert_distance_range(self.origins[:, :2], p_t, 0.5, 0.8)
         self.assert_distance_range(p_t, p_t1, 0.8, 1.0)
 
+    def test_two_hop_scenario_buckets_cover_reversal_and_zero_transitions(self):
+        count = 1024
+        ids = torch.arange(count)
+        origins = torch.zeros(count, 3)
+        command = TwoHopRandomCommand(
+            count, 'cpu', .12, .30, .30, .50, 10000,
+            math.pi, zero_hop_probability=.12,
+            reverse_turn_probability=.65,
+            reverse_turn_halfwidth_rad=math.pi / 6,
+            pair_scenario_groups=True,
+        )
+        command.reset(ids, origins, random_phase=False)
+        self.assertEqual(torch.bincount(command.pair_scenario).tolist(), [512, 256, 256])
+        first, second = command.lookahead()
+        first_leg = first - origins[:, :2]
+        second_leg = second - first
+        self.assertTrue(torch.all(first_leg[:768].norm(dim=1) >= .12 - 1e-6))
+        self.assertTrue(torch.all(second_leg[:768].norm(dim=1) >= .30 - 1e-6))
+        reverse = slice(512, 768)
+        signed_turn = torch.atan2(
+            first_leg[reverse, 0] * second_leg[reverse, 1]
+            - first_leg[reverse, 1] * second_leg[reverse, 0],
+            (first_leg[reverse] * second_leg[reverse]).sum(dim=1),
+        ).abs()
+        self.assertTrue(torch.all(signed_turn >= 5 * math.pi / 6 - 1e-5))
+        pattern = command.pair_zero_pattern[768:].clone()
+        self.assertEqual(torch.bincount(pattern, minlength=3).tolist(), [86, 85, 85])
+        self.assertTrue(torch.all(first_leg[768:][pattern != 2] == 0))
+        self.assertTrue(torch.all(second_leg[768:][pattern != 1] == 0))
+        command.reset(ids, origins, random_phase=False)
+        self.assertTrue(torch.equal(
+            command.pair_zero_pattern[768:], (pattern + 1) % 3
+        ))
+
     def test_advance_keeps_two_point_lookahead_and_alternates_range(self):
         # Vectorized height training is allowed to randomize its phase without
         # changing the short/long geometric period.
@@ -182,6 +216,37 @@ class RandomTwoHopCommandTest(unittest.TestCase):
         command.advance(self.env_ids)
         p_t, p_t1 = command.lookahead()
         assert_bounded(p_t - command.anchor_w, p_t1 - p_t)
+
+    def test_zero_width_reverse_band_produces_exact_ab_return(self):
+        command = TwoHopRandomCommand(
+            128, "cpu", .25, .25, .25, .25, 58,
+            math.pi, zero_hop_probability=0.0,
+            reverse_turn_probability=1.0, reverse_turn_halfwidth_rad=0.0,
+        )
+        env_ids = torch.arange(128)
+        origins = torch.zeros(128, 3)
+        command.reset(env_ids, origins, random_phase=False)
+        point_b, point_a = command.lookahead()
+        point_b = point_b.clone()
+        torch.testing.assert_close(point_a, origins[:, :2], atol=1e-6, rtol=0)
+        command.advance(env_ids)
+        point_a, next_b = command.lookahead()
+        torch.testing.assert_close(point_a, origins[:, :2], atol=1e-6, rtol=0)
+        torch.testing.assert_close(next_b, point_b, atol=1e-6, rtol=0)
+
+    def test_fixed_initial_heading_places_ab_return_on_world_x_axis(self):
+        command = TwoHopRandomCommand(
+            8, 'cpu', .5, .5, .5, .5, 58, math.pi,
+            reverse_turn_probability=1.0, reverse_turn_halfwidth_rad=0.0,
+            fixed_initial_heading_rad=0.0,
+        )
+        env_ids = torch.arange(8)
+        origins = torch.zeros(8, 3)
+        command.reset(env_ids, origins, random_phase=False)
+        point_b, point_a = command.lookahead()
+        torch.testing.assert_close(point_b[:, 0], torch.full((8,), .5))
+        torch.testing.assert_close(point_b[:, 1], torch.zeros(8), atol=1e-6, rtol=0)
+        torch.testing.assert_close(point_a, origins[:, :2], atol=1e-6, rtol=0)
 
 
 if __name__ == "__main__":
