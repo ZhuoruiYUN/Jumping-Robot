@@ -107,6 +107,12 @@ def manifest_flags(manifest):
             if not manifest.get('foot_pair_v33') or not 0.0 < foot_width <= 0.20:
                 raise ValueError('custom stage2 foot width requires foot_pair_v33 and width in (0, 0.20]')
             flags.extend(('--stage2-foot-precision-width-m', str(foot_width)))
+        hit_10cm_scale = manifest.get('path_free_stage2', {}).get('stage2_foot_hit_10cm_scale')
+        if hit_10cm_scale is not None:
+            if (not manifest.get('foot_pair_v33') or not isinstance(hit_10cm_scale, (int, float))
+                    or not 0.0 <= hit_10cm_scale <= 60.0):
+                raise ValueError('10 cm foot hit reward requires foot_pair_v33 and scale in [0, 60]')
+            flags.extend(('--stage2-foot-hit-10cm-scale', str(hit_10cm_scale)))
         pair_xy_weight = manifest.get('path_free_stage2', {}).get(
             'stage2_pair_xy_quality_weight', 0.0)
         if pair_xy_weight:
@@ -179,7 +185,10 @@ def endpoint_terms(error_m, valid_touchdown, power_w, dt, cfg):
     precision = cfg.stage2_foot_precision_scale * torch.exp(
         -(error_m / cfg.stage2_foot_precision_width_m).square())
     hit = cfg.stage2_foot_hit_scale * (error_m <= cfg.stage2_foot_hit_radius_m)
-    landing = (precision + hit) * valid_touchdown
+    # Opt-in per-hop credit at the strict foot-pair threshold. The caller's
+    # valid_touchdown already excludes the initial drop and low-apex hops.
+    hit_10cm = getattr(cfg, 'stage2_foot_hit_10cm_scale', 0.0) * (error_m < 0.10)
+    landing = (precision + hit + hit_10cm) * valid_touchdown
     # Predicted electrical power is an estimate, not a physical measurement.
     energy_j = power_w.clamp_min(0.0) * dt
     return landing, cfg.stage2_energy_penalty_scale * energy_j, energy_j

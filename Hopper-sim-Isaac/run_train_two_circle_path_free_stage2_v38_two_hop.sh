@@ -75,6 +75,10 @@ if [[ ! -f "$ANCHOR" || ! -f "$(dirname -- "$ANCHOR")/manifest.json" || \
   exit 2
 fi
 OUTPUT="${OUTPUT:-$ROOT/outputs/tracking_recovery/two_circle_path_free_stage2_v38_${STAGE}_$(date +%Y%m%d_%H%M%S)}"
+HIT10_ARGS=()
+if [[ -n "${STAGE2_FOOT_HIT_10CM_SCALE:-}" ]]; then
+  HIT10_ARGS=(--stage2-foot-hit-10cm-scale "$STAGE2_FOOT_HIT_10CM_SCALE")
+fi
 echo "[TWO-HOP-V38] stage=$STAGE source=$ANCHOR output=$OUTPUT"
 unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
 if [[ "${DRY_RUN:-0}" != 1 ]]; then
@@ -104,6 +108,7 @@ exec env CHECKPOINT="$ANCHOR" OUTPUT="$OUTPUT" \
   --liftoff-cross-track-penalty-scale 0 \
   --stage2-foot-precision-scale 60 \
   --stage2-foot-precision-width-m "${STAGE2_FOOT_PRECISION_WIDTH_M:-0.06}" \
+  "${HIT10_ARGS[@]}" \
   --pair-xy-quality-weight-v36 0 \
   --reverse-turn-probability "$REVERSE_TURN_PROBABILITY" \
   --comprehensive-global-thrust-scale-min 0.95 \

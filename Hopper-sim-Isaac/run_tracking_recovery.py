@@ -54,6 +54,8 @@ parser.add_argument('--stage2-foot-precision-scale', type=float,
                     help='V3 foot touchdown Gaussian reward scale; default 60.')
 parser.add_argument('--stage2-foot-precision-width-m', type=float,
                     help='V3 foot touchdown Gaussian width in metres; default 0.06.')
+parser.add_argument('--stage2-foot-hit-10cm-scale', type=float,
+                    help='Opt-in per-hop strict-apex foot hit bonus below 10 cm; default 0.')
 parser.add_argument('--pair-xy-quality-weight-v36', type=float,
                     help='Within strict V33 foot pairs, weight smooth two-foot XY quality in [0, 1].')
 parser.add_argument('--sysid-20261011-plant', action='store_true',
@@ -322,6 +324,12 @@ if args.stage2_foot_precision_width_m is not None and (
     or not 0.0 < args.stage2_foot_precision_width_m <= 0.20
 ):
     parser.error('--stage2-foot-precision-width-m requires --foot-pair-v33 and a finite value in (0, 0.20]')
+if args.stage2_foot_hit_10cm_scale is not None and (
+    not args.path_free_stage2_v3 or not args.foot_pair_v33
+    or not math.isfinite(args.stage2_foot_hit_10cm_scale)
+    or not 0.0 <= args.stage2_foot_hit_10cm_scale <= 60.0
+):
+    parser.error('--stage2-foot-hit-10cm-scale requires V3 foot pair and a finite value in [0, 60]')
 if args.pair_xy_quality_weight_v36 is not None and (
     not args.foot_pair_v33 or not math.isfinite(args.pair_xy_quality_weight_v36)
     or not 0.0 <= args.pair_xy_quality_weight_v36 <= 1.0
@@ -754,6 +762,8 @@ if args.stage2_foot_precision_scale is not None:
     command += ['--stage2-foot-precision-scale', str(args.stage2_foot_precision_scale)]
 if args.stage2_foot_precision_width_m is not None:
     command += ['--stage2-foot-precision-width-m', str(args.stage2_foot_precision_width_m)]
+if args.stage2_foot_hit_10cm_scale is not None:
+    command += ['--stage2-foot-hit-10cm-scale', str(args.stage2_foot_hit_10cm_scale)]
 if args.pair_xy_quality_weight_v36 is not None:
     command += ['--pair-xy-quality-weight-v36', str(args.pair_xy_quality_weight_v36)]
 if args.moving_launch_rate_v34:

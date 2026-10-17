@@ -7,7 +7,7 @@ This repository contains a planar hybrid-dynamics hopper, early MuJoCo studies, 
 - **Environment and control:** Isaac Sim 5.1 with an Isaac Lab `DirectRLEnv`; four direct motor commands at a 100 Hz policy rate. Contact, stance and ballistic flight are handled by the physics simulation. The current plant is a spring-leg proxy updated with the 11 October 2026 mounted-system identification parameters; it is still an approximation of the hardware.
 - **Policy:** recurrent RSL-RL PPO. Its `history_foot_v19` observation has 336 values: the current 56-value frame plus five previous frames. It includes measured robot state, foot geometry, and body-frame information for the current and next ground targets. The learned controller outputs motor commands directly. The active path-free Stage 2 task does **not** use a prescribed Raibert or direct-collocation trajectory during training or inference.
 - **Task:** successive arbitrary-direction targets at 0.12–0.50 m, including short/long hops, reverse turns, and zero-distance targets. The apex target is 1.0 m in world Z. Foot landing position, apex, posture and continuity across jumps are evaluated separately.
-- **Training:** the formal V37–V40 runs used **1,024 parallel environments**, 256 policy steps per environment per PPO iteration, and weights-only continuation between stages. The V38 nominal and robust stages reset an environment after two hops; the subsequent continuous-chain stages do not reset after every two hops. A 61 s episode limit is therefore compatible with the earlier two-hop curriculum.
+- **Training:** the formal V37–V41 runs used **1,024 parallel environments**, 256 policy steps per environment per PPO iteration, and weights-only continuation between stages. The V38 nominal and robust stages reset an environment after two hops; the subsequent continuous-chain stages do not reset after every two hops. A 61 s episode limit is therefore compatible with the earlier two-hop curriculum.
 
 ### Training that actually ran
 
@@ -19,6 +19,7 @@ This repository contains a planar hybrid-dynamics hopper, early MuJoCo studies, 
 | V38 chain short / mid / bridge / final | 1,024 each | 50 / 50 / 80 / 200 | 12 / 24 / 40 / 61 s | Continuous |
 | V39 direction-mix control / variant | 1,024 each | 50 each | 61 s | Continuous; variant did not advance |
 | V40 foot-width variant | 1,024 | 50 | 61 s | Continuous; variant did not advance |
+| V41 per-hop 10 cm foot-hit control / variant | 1,024 each | 50 each | 61 s | Continuous; variant did not advance |
 
 The selected research checkpoint is **V38 final-chain `model_199.pt`**. These are separate completed training runs, not one uninterrupted run or a claim that 1,024 robots were tested physically. Small smoke tests used fewer environments and are excluded from the table. Run-specific manifests, checkpoints and console output stay local under `Hopper-sim-Isaac/outputs/` and are not committed.
 
@@ -32,11 +33,11 @@ The strict two-hop measure requires **both** foot placements within 10 cm of the
 | Seed 583, 61 s episodes, 100% wider hardware stress | 54.75% | 77.15% | 68.38% |
 | Seed 583, 301 s episodes, 100% wider hardware stress | 52.60% | 82.25% | 74.17% |
 
-The 301 s stress test extends beyond the 61 s training limit. No physical death was observed in these finite frozen-policy evaluations, while the 200-iteration V38 final-chain training recorded seven physical death events. Zero observed deaths in a finite simulation test does not establish hardware safety. Accuracy under strong arbitrary-direction stress remains below the project's goal. Matched V39 direction-mix and V40 wider foot-reward variants were evaluated and **not selected** because they did not improve the primary arbitrary-direction result.
+The 301 s stress test extends beyond the 61 s training limit. No physical death was observed in these finite frozen-policy evaluations, while the 200-iteration V38 final-chain training recorded seven physical death events. Zero observed deaths in a finite simulation test does not establish hardware safety. Accuracy under strong arbitrary-direction stress remains below the project's goal. Matched V39 direction-mix, V40 wider foot-reward and V41 per-hop 10 cm bonus variants were evaluated and **not selected**. In the V41 seed 583 stress comparison, the experimental bonus lowered arbitrary-direction strict two-hop success from 57.35% to 56.29%, although reverse success rose from 64.98% to 70.32%; it failed the predeclared all-scenario gate.
 
 ## Reproducing the current task
 
-The Stage 2 implementation is in [`Hopper-sim-Isaac/Quadhopper_Planner_Random/`](Hopper-sim-Isaac/Quadhopper_Planner_Random/README.md). Training and evaluation enter through [`run_tracking_recovery.py`](Hopper-sim-Isaac/run_tracking_recovery.py), [`train_tracking_recovery.py`](Hopper-sim-Isaac/train_tracking_recovery.py), and the V37–V40 shell wrappers in `Hopper-sim-Isaac/`. Use the installed Isaac Sim `python.sh` through those wrappers. Later stages require the local checkpoint produced by the preceding stage; this Git repository provides the source and configuration, not the training weights or generated reports.
+The Stage 2 implementation is in [`Hopper-sim-Isaac/Quadhopper_Planner_Random/`](Hopper-sim-Isaac/Quadhopper_Planner_Random/README.md). Training and evaluation enter through [`run_tracking_recovery.py`](Hopper-sim-Isaac/run_tracking_recovery.py), [`train_tracking_recovery.py`](Hopper-sim-Isaac/train_tracking_recovery.py), and the V37–V41 shell wrappers in `Hopper-sim-Isaac/`. Use the installed Isaac Sim `python.sh` through those wrappers. Later stages require the local checkpoint produced by the preceding stage; this Git repository provides the source and configuration, not the training weights or generated reports.
 
 ## Earlier work
 

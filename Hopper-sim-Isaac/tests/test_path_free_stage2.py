@@ -64,6 +64,27 @@ class PathFreeStage2Test(unittest.TestCase):
         flags = manifest_flags(manifest)
         self.assertEqual(flags[-2:], ['--stage2-foot-precision-width-m', '0.09'])
 
+    def test_opt_in_single_hop_10cm_bonus_matches_strict_foot_gate(self):
+        control = NS(**SETTINGS_V3)
+        bonus = NS(**SETTINGS_V3, stage2_foot_hit_10cm_scale=20.0)
+        error = torch.tensor([.05, .099, .10, .15, .02])
+        valid = torch.tensor([True, True, True, True, False])
+        power = torch.zeros(5)
+        old, _, _ = endpoint_terms(error, valid, power, .01, control)
+        new, _, _ = endpoint_terms(error, valid, power, .01, bonus)
+        torch.testing.assert_close(new - old, torch.tensor([20., 20., 0., 0., 0.]))
+
+    def test_single_hop_10cm_bonus_restores_only_when_recorded(self):
+        base = {'protocol': PROTOCOL_V3, 'v3_accounting_fix': True,
+                'foot_pair_v33': True, 'path_free_stage2': dict(SETTINGS_V3)}
+        self.assertNotIn('--stage2-foot-hit-10cm-scale', manifest_flags(base))
+        base['path_free_stage2']['stage2_foot_hit_10cm_scale'] = 20.0
+        self.assertEqual(manifest_flags(base)[-2:],
+                         ['--stage2-foot-hit-10cm-scale', '20.0'])
+        base['foot_pair_v33'] = False
+        with self.assertRaises(ValueError):
+            manifest_flags(base)
+
     def test_touchdown_uses_consumed_target_and_height_gate(self):
         env = object.__new__(task_class())
         env.cfg = NS(**SETTINGS)
