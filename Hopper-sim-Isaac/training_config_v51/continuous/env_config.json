@@ -1,0 +1,290 @@
+{
+  "viewer": {
+    "eye": [
+      7.5,
+      7.5,
+      7.5
+    ],
+    "lookat": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "cam_prim_path": "/OmniverseKit_Persp",
+    "resolution": [
+      1280,
+      720
+    ],
+    "origin_type": "world",
+    "env_index": 0,
+    "asset_name": null,
+    "body_name": null
+  },
+  "sim": {
+    "physics_prim_path": "/physicsScene",
+    "device": "cuda:0",
+    "dt": 0.005,
+    "render_interval": 2,
+    "gravity": [
+      0.0,
+      0.0,
+      -9.81
+    ],
+    "enable_scene_query_support": false,
+    "use_fabric": true,
+    "physx": {
+      "solver_type": 1,
+      "solve_articulation_contact_last": false,
+      "min_position_iteration_count": 1,
+      "max_position_iteration_count": 255,
+      "min_velocity_iteration_count": 0,
+      "max_velocity_iteration_count": 255,
+      "enable_ccd": false,
+      "enable_stabilization": false,
+      "enable_external_forces_every_iteration": false,
+      "enable_enhanced_determinism": false,
+      "bounce_threshold_velocity": 0.5,
+      "friction_offset_threshold": 0.04,
+      "friction_correlation_distance": 0.025,
+      "gpu_max_rigid_contact_count": 8388608,
+      "gpu_max_rigid_patch_count": 163840,
+      "gpu_found_lost_pairs_capacity": 2097152,
+      "gpu_found_lost_aggregate_pairs_capacity": 33554432,
+      "gpu_total_aggregate_pairs_capacity": 2097152,
+      "gpu_collision_stack_size": 67108864,
+      "gpu_heap_capacity": 67108864,
+      "gpu_temp_buffer_capacity": 16777216,
+      "gpu_max_num_partitions": 8,
+      "gpu_max_soft_body_contacts": 1048576,
+      "gpu_max_particle_contacts": 1048576
+    },
+    "physics_material": {
+      "func": "isaaclab.sim.spawners.materials.physics_materials:spawn_rigid_body_material",
+      "static_friction": 1.5,
+      "dynamic_friction": 1.5,
+      "restitution": 0.0,
+      "friction_combine_mode": "average",
+      "restitution_combine_mode": "average",
+      "compliant_contact_stiffness": 0.0,
+      "compliant_contact_damping": 0.0
+    },
+    "render": {
+      "enable_translucency": null,
+      "enable_reflections": null,
+      "enable_global_illumination": null,
+      "antialiasing_mode": null,
+      "enable_dlssg": null,
+      "enable_dl_denoiser": null,
+      "dlss_mode": null,
+      "enable_direct_lighting": null,
+      "samples_per_pixel": null,
+      "enable_shadows": null,
+      "enable_ambient_occlusion": null,
+      "dome_light_upper_lower_strategy": null,
+      "carb_settings": null,
+      "rendering_mode": null
+    },
+    "create_stage_in_memory": false,
+    "logging_level": "WARNING",
+    "save_logs_to_file": true,
+    "log_dir": null
+  },
+  "ui_window_class_type": "Quadhopper_PPO_Reference_SysID.quadhopper_env:QuadhopperEnvWindow",
+  "seed": 42,
+  "decimation": 2,
+  "is_finite_horizon": false,
+  "episode_length_s": 60.0,
+  "scene": {
+    "num_envs": 1024,
+    "env_spacing": 2.0,
+    "lazy_sensor_update": true,
+    "replicate_physics": true,
+    "filter_collisions": true,
+    "clone_in_fabric": false
+  },
+  "events": null,
+  "observation_space": 73,
+  "num_observations": null,
+  "state_space": 0,
+  "num_states": null,
+  "observation_noise_model": null,
+  "action_space": 4,
+  "num_actions": null,
+  "action_noise_model": null,
+  "rerender_on_reset": false,
+  "num_rerenders_on_reset": 0,
+  "wait_for_textures": true,
+  "xr": null,
+  "log_dir": null,
+  "robot": {
+    "class_type": "isaaclab.assets.articulation.articulation:Articulation",
+    "prim_path": "/World/envs/env_.*/Robot",
+    "spawn": {
+      "func": "isaaclab.sim.spawners.from_files.from_files:spawn_from_usd",
+      "visible": true,
+      "semantic_tags": null,
+      "copy_from_source": true,
+      "mass_props": null,
+      "deformable_props": null,
+      "rigid_props": {
+        "rigid_body_enabled": null,
+        "kinematic_enabled": null,
+        "disable_gravity": false,
+        "linear_damping": 0.0,
+        "angular_damping": null,
+        "max_linear_velocity": null,
+        "max_angular_velocity": null,
+        "max_depenetration_velocity": 10.0,
+        "max_contact_impulse": null,
+        "enable_gyroscopic_forces": true,
+        "retain_accelerations": null,
+        "solver_position_iteration_count": null,
+        "solver_velocity_iteration_count": null,
+        "sleep_threshold": null,
+        "stabilization_threshold": null
+      },
+      "collision_props": null,
+      "activate_contact_sensors": false,
+      "scale": null,
+      "articulation_props": {
+        "articulation_enabled": null,
+        "enabled_self_collisions": false,
+        "solver_position_iteration_count": null,
+        "solver_velocity_iteration_count": null,
+        "sleep_threshold": null,
+        "stabilization_threshold": null,
+        "fix_root_link": null
+      },
+      "fixed_tendons_props": null,
+      "spatial_tendons_props": null,
+      "joint_drive_props": null,
+      "visual_material_path": "material",
+      "visual_material": null,
+      "usd_path": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/benchmark37/HopperCalibrated20261028.usda",
+      "variants": null
+    },
+    "init_state": {
+      "pos": [
+        0.0,
+        0.0,
+        0.5
+      ],
+      "rot": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "lin_vel": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ang_vel": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "joint_pos": {
+        "center_spring_joint": 0.0
+      },
+      "joint_vel": {
+        "center_spring_joint": 0.0
+      }
+    },
+    "collision_group": 0,
+    "debug_vis": false,
+    "articulation_root_prim_path": null,
+    "soft_joint_pos_limit_factor": 1.0,
+    "actuators": {},
+    "actuator_value_resolution_debug_print": false
+  },
+  "debug_vis": true,
+  "power_model_path": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/Quadhopper_PPO_Reference_SysID/model/quadhopper_memory_power.pt",
+  "csv_log_path": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/continuous_v51/round_00046/train/single_env.csv",
+  "csv_flush_interval": 100,
+  "train_motor_time_constant_min": 0.06666666666666667,
+  "train_motor_time_constant_max": 0.09333333333333334,
+  "train_drop_height_min": 0.8,
+  "train_drop_height_max": 1.5,
+  "curriculum_num_steps_per_env": 256,
+  "curriculum_max_iterations": 250,
+  "curriculum_vertical_fraction": 0.4,
+  "curriculum_full_difficulty_fraction": 0.8,
+  "curriculum_initial_xy_radius_max": 5.0,
+  "curriculum_roll_pitch_max": 0.25,
+  "curriculum_yaw_max": 3.14159,
+  "play_motor_time_constant": 0.08,
+  "play_action_delay": 3,
+  "play_target_pos": [
+    0,
+    0,
+    1.3
+  ],
+  "play_initial_pos": [
+    0,
+    0,
+    1
+  ],
+  "survival_reward_scale": 5.0,
+  "distance_to_xy_reward_scale": 15.0,
+  "distance_to_z_reward_scale": 2.0,
+  "energy_tracking_reward_scale": 12.0,
+  "apex_reward_scale": 8.0,
+  "vertical_energy_error_scale": 2.0,
+  "yaw_penalty_scale": -7.0,
+  "attitude_penalty_scale": -20.0,
+  "angular_vel_penalty_scale": -0.5,
+  "lazy_ground_penalty_scale": -10.0,
+  "power_penalty_scale": -0.08,
+  "synergy_reward_scale": 0.8,
+  "anti_synergy_penalty_scale": -0.8,
+  "spring_power_velocity_threshold": 0.5,
+  "xy_error_penalty_scale": -1.5,
+  "xy_progress_reward_scale": 20.0,
+  "goal_bonus_scale": 8.0,
+  "lateral_vel_penalty_scale": -10.0,
+  "flight_power_penalty_scale": -0.6,
+  "hover_penalty_scale": -12.0,
+  "action_rate_reward_scale": -0.5,
+  "termination_penalty_scale": -10.0,
+  "terrain": {
+    "class_type": "isaaclab.terrains.terrain_importer:TerrainImporter",
+    "collision_group": -1,
+    "prim_path": "/World/ground",
+    "num_envs": 1,
+    "terrain_type": "plane",
+    "terrain_generator": null,
+    "usd_path": null,
+    "env_spacing": null,
+    "use_terrain_origins": true,
+    "visual_material": {
+      "func": "isaaclab.sim.spawners.materials.visual_materials:spawn_preview_surface",
+      "diffuse_color": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "emissive_color": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "roughness": 0.5,
+      "metallic": 0.0,
+      "opacity": 1.0
+    },
+    "physics_material": {
+      "func": "isaaclab.sim.spawners.materials.physics_materials:spawn_rigid_body_material",
+      "static_friction": 1.5,
+      "dynamic_friction": 1.5,
+      "restitution": 0.0,
+      "friction_combine_mode": "average",
+      "restitution_combine_mode": "average",
+      "compliant_contact_stiffness": 0.0,
+      "compliant_contact_damping": 0.0
+    },
+    "max_init_terrain_level": null,
+    "debug_vis": false
+  }
+}

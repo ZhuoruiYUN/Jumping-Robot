@@ -1,0 +1,9 @@
+{
+  "status": "frozen_development_reference_task_gaps_remain",
+  "benchmark": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark37_stage4l_landing_gain/benchmark_freeze_seed42_20261102_053833_866269Z/benchmark.json",
+  "benchmark_sha256": "45b751a79f57785fd167fd37cdc78deb45affed14ff29e4cc68b280f242fbde3",
+  "checkpoint": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark37_stage4l_landing_gain/train_seed42_20261102_034630_836993Z/model_49.pt",
+  "checkpoint_sha256": "e0a04f04ce5fb82922adc0f3724beeb5501e7711ab04836221965d7bb61c0934",
+  "obs_dim": 41,
+  "qualification_scope": "41D continuous-jump development reference. Does not replace original37D benchmark or imply universal reliability."
+}

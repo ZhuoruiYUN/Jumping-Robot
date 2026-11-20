@@ -1,0 +1,20 @@
+{
+  "status": "development_seed7001_passed_short_hop_candidate",
+  "physics_revision": "sysid_20261028_spring_air_v2_local_wrench",
+  "checkpoint": "outputs/benchmark37_stage4a_calibrated_20261028_v2/train_seed42_20261028_085657_389015Z/model_199.pt",
+  "checkpoint_sha256": "db9e64d9824b5050272458104bd2fd15aaa6f0cc79e2c22c0b3f0fcd9578ae2b",
+  "evaluation_summary": "outputs/benchmark37_stage4a_calibrated_20261028_v2/eval_seed7001_20261028_092021_478739Z/summary.json",
+  "protocol": "two_ground15",
+  "evaluation_seed": 7001,
+  "episodes": 272,
+  "hop_range_m": [0.0, 0.4],
+  "observation_dim": 41,
+  "strict_first_pair_count": 247,
+  "strict_first_pair_rate": 0.9080882352941176,
+  "first_second_attempt_foot_error_p95_m": [0.07287534810602662, 0.08930825069546697],
+  "true_next_target_attempts_after_first_hit": 259,
+  "true_next_target_foot_error_p95_m": 0.08444188088178635,
+  "first_second_apex_ge1m_rate": [0.9816176470588235, 0.9816176470588235],
+  "physical_deaths": 0,
+  "scope": "Selected as current short-hop development benchmark under v2 physics. One development seed, 15s episodes; not independently validated, not a 0.8m or deployment qualification. Tail misses still exist."
+}

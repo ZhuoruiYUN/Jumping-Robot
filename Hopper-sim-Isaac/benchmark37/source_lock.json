@@ -1,0 +1,12 @@
+{
+  "archive": "/home/terry/Downloads/PPO-jump-reference.zip",
+  "archive_sha256": "a318d85453ea7b8778fd20a9fda3161fbc92c1e29c1606272a331ca7ec6a9e13",
+  "files": {
+    "Quadhopper_PPO_Benchmark37/quadhopper_env.py": "720881a1482757c1941df6b3316ea9b3051784efddfb00086e82e7fe8cd82999",
+    "Quadhopper_PPO_Benchmark37/my_hopper_cfg.py": "81a3da14ca837d3f70360196fe3be937136298b0938a9b76109f083432f02ab2",
+    "Quadhopper_PPO_Benchmark37/agents/__init__.py": "8a87c5866d1e155ec46168847d6be890743a813681abe7882fea8f198fcb8802",
+    "Quadhopper_PPO_Benchmark37/agents/rsl_rl_ppo_cfg.py": "3de36a3b5d47472d362929a5c748536e9fac1cbb1491c9f30cd367ce1fe6a3d0",
+    "Quadhopper_PPO_Benchmark37/model/HopperAsset.usd": "2d1cfe4615dbc67d6b6c6351f6138556313314af21bd25e203d00cca33513ceb",
+    "Quadhopper_PPO_Benchmark37/model/quadhopper_memory_power.pt": "a7f41bd0a576291cb7ca5a197cd70a03871b226d26a8e21d5f80bb8dc80fd086"
+  }
+}

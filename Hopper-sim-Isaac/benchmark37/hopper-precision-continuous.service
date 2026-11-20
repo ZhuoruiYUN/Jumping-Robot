@@ -1,0 +1,15 @@
+[Unit]
+Description=Quadhopper simulation-only precision training and qualification
+StartLimitIntervalSec=1800
+StartLimitBurst=3
+
+[Service]
+WorkingDirectory=%h/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac
+ExecStart=/usr/bin/python3 -u -m benchmark37.precision_continuous
+Restart=on-failure
+RestartSec=60
+TimeoutStopSec=30
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

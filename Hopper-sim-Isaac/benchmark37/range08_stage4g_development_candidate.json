@@ -1,0 +1,39 @@
+{
+  "status": "selected_for_development_full_range_precision_pending",
+  "checkpoint": "outputs/benchmark37_stage4g_first_hop_margin_control/train_seed42_20261029_073211_802030Z/model_49.pt",
+  "checkpoint_sha256": "b7fcb7297b7a0ae2243dcf3e0e6bcb7ae463b4f4a8c642f07f5fd66cce7500fd",
+  "variant": "real_release_two_ground_range08_first_hop_margin_control",
+  "source_stage": "Stage4g matched continuation control; K50 with1.00m deficit reference on all attempts",
+  "physics_revision": "sysid_20261028_spring_air_v2_local_wrench",
+  "observation_dim": 41,
+  "hop_range_m": [
+    0.0,
+    0.8
+  ],
+  "deficit_reference_world_m_by_slot": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "score_apex_world_m": 1.0,
+  "evaluation_summary": "outputs/benchmark37_stage4g_first_hop_margin_control/eval_seed7001_20261029_074556_827290Z/summary.json",
+  "evaluation_seed": 7001,
+  "protocol": "two_ground15",
+  "episodes": 272,
+  "strict_first_pair_count": 250,
+  "strict_first_pair_rate": 0.9191176470588235,
+  "first_second_attempt_foot_error_p95_m": [
+    0.08712317198514936,
+    0.08045843429863453
+  ],
+  "long_long_episodes": 62,
+  "long_long_strict_first_pair_count": 49,
+  "long_long_first_second_attempt_foot_error_p95_m": [
+    0.11431399360299105,
+    0.112874323874712
+  ],
+  "physical_deaths": 0,
+  "operational_proxy_s_per_strict_hit": 7.895831065174412,
+  "decision_report": "outputs/benchmark37_stage4g_first_hop_margin_control/comparison_seed7001_20261029_075533_557536Z/review_20261029_080230_764552Z/review.json",
+  "scope": "One development seed; not a full-range qualification or deployment claim. Existing range08_development_reference.json and historical models remain unchanged. No automatic training selection changed."
+}

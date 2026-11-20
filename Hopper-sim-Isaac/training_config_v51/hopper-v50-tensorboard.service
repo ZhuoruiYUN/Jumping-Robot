@@ -1,0 +1,12 @@
+[Unit]
+Description=TensorBoard for Hopper precision training
+
+[Service]
+WorkingDirectory=%h/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac
+Environment=PYTHONPATH=/home/terry/Documents/isaacsim/isaac-sim-standalone-5.1.0-linux-x86_64/exts/omni.isaac.ml_archive/pip_prebundle
+ExecStart=%h/Documents/isaacsim/isaac-sim-standalone-5.1.0-linux-x86_64/python.sh -m tensorboard.main --host 127.0.0.1 --port 6011 --logdir %h/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

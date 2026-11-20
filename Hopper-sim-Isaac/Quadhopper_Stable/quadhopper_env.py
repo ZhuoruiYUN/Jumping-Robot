@@ -106,6 +106,9 @@ class QuadhopperEnvCfg(DirectRLEnvCfg):
     randomize_dynamics = True
     # Explicit 2026-10-11 mounted SysID spring-leg proxy. Historical runs stay reproducible.
     sysid_20261011_plant = False
+    # Opt-in revised local airborne identification. Historical runs stay fixed.
+    sysid_20261020_revision = False
+    sysid_20261020_allow_extrapolation = False
     sysid_voltage_reference_v = 3.7
     sysid_voltage_exponent = 1.44630397739629
     sysid_yaw_kqf_m = 0.010
@@ -654,6 +657,34 @@ class QuadhopperEnv(DirectRLEnv):
         if self.cfg.record_executed_action_history:
             self._action_history.append((2.0 * target_u - 1.0).clone())
         if self.cfg.sysid_20261011_plant:
+            if self.cfg.sysid_20261020_revision:
+                from .sysid_20261020 import actuator_step_and_wrench
+
+                compare = torch.floor(target_u * 1000.0).clamp(0.0, 999.0)
+                voltage = getattr(self, '_sysid_loaded_voltage_v', None)
+                if voltage is None:
+                    voltage = torch.full((self.num_envs, 1), self.cfg.sysid_voltage_reference_v,
+                                         device=self.device, dtype=target_u.dtype)
+                previous = self._motor_u
+                next_state, force_each, torque, outside = actuator_step_and_wrench(
+                    previous, compare, voltage, self._dt_policy
+                )
+                if outside.any() and not self.cfg.sysid_20261020_allow_extrapolation:
+                    raise RuntimeError(
+                        '2026-10-20 thrust fit used outside w=0.2437..0.7331; '
+                        'low/high thrust remains uncalibrated. Explicitly enable '
+                        'research-only extrapolation to continue.'
+                    )
+                self._motor_u = next_state
+                self._sysid_20261020_outside_support = outside
+                duty = compare / 1000.0
+                self._motor_u_history, self._soc_tracker = update_power_model_memory(
+                    self._motor_u_history, self._soc_tracker, duty
+                )
+                self._sysid_last_motor_forces = force_each
+                self._thrust[:, 0, 2] = force_each.sum(dim=1)
+                self._moment[:, 0] = torque
+                return
             # FC compare is an integer in [0,999]; voltage acts before the
             # identified motor lag. The state is effective thrust, not PWM.
             compare = torch.floor(target_u * 1000.0).clamp(0.0, 999.0)

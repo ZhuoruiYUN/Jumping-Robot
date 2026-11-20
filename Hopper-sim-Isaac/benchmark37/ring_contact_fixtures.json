@@ -1,0 +1,121 @@
+{
+  "course": {
+    "center_local_m": [
+      0.27,
+      0.0,
+      0.85
+    ],
+    "normal_world": [
+      1.0,
+      0.0,
+      0.0
+    ],
+    "inner_radius_m": 0.339594107152145,
+    "axial_thickness_m": 0.02,
+    "tube_radial_width_m": 0.025,
+    "delta_m": 0.002,
+    "envelope": {
+      "version": "full_assembly_boxes_swept_v1",
+      "bounds_q0_min_m": [
+        -0.18130000000000002,
+        -0.18130000000000002,
+        -0.28500001
+      ],
+      "bounds_all_q_max_m": [
+        0.18130000000000002,
+        0.18130000000000002,
+        0.008
+      ],
+      "dimensions_q0_m": [
+        0.36260000000000003,
+        0.36260000000000003,
+        0.29300001000000003
+      ],
+      "dimensions_q087_m": [
+        0.36260000000000003,
+        0.36260000000000003,
+        0.20600001000000004
+      ],
+      "sphere_center_body_m": [
+        0.0,
+        0.0,
+        -0.138500005
+      ],
+      "D_env_m": 0.5905984472211218,
+      "sphere_construction": "half diagonal of union AABB over q=0..0.087m",
+      "D0_m": 0.67918821430429,
+      "rotor_radius_m": 0.1,
+      "rotor_half_height_m": 0.008,
+      "rotor_source": "provisional engineering allowance; measured blade sweep unavailable",
+      "asset_audit": "composed HopperCalibrated20261028.usda: body/arms/motors/base/leg/rod/foot collision present; rotor sweep absent",
+      "delta_m": 0.002,
+      "delta_source": "simulation numerical engineering margin only; not a hardware error budget"
+    }
+  },
+  "contacts": [
+    {
+      "case_id": 4,
+      "control_step": 51,
+      "previous": {
+        "position_local_m": [
+          0.0698089599609375,
+          -0.007387757301330566,
+          0.4213106036186218
+        ],
+        "quaternion_wxyz": [
+          0.9953718781471252,
+          -0.0037185002584010363,
+          0.09596770256757736,
+          -0.003342162584885955
+        ],
+        "spring_q_m": 0.0
+      },
+      "current": {
+        "position_local_m": [
+          0.07367277145385742,
+          -0.007537961006164551,
+          0.4337995946407318
+        ],
+        "quaternion_wxyz": [
+          0.9953851103782654,
+          -0.00514602568000555,
+          0.0957781970500946,
+          -0.002887865761294961
+        ],
+        "spring_q_m": 0.0
+      }
+    },
+    {
+      "case_id": 11,
+      "control_step": 130,
+      "previous": {
+        "position_local_m": [
+          0.445878267288208,
+          -0.02166759967803955,
+          0.6202187538146973
+        ],
+        "quaternion_wxyz": [
+          0.9984433054924011,
+          0.014583272859454155,
+          -0.05107997730374336,
+          0.01700402796268463
+        ],
+        "spring_q_m": 0.0
+      },
+      "current": {
+        "position_local_m": [
+          0.44893312454223633,
+          -0.021404623985290527,
+          0.6072292923927307
+        ],
+        "quaternion_wxyz": [
+          0.998475968837738,
+          0.014562992379069328,
+          -0.050326231867074966,
+          0.01734173484146595
+        ],
+        "spring_q_m": 0.0
+      }
+    }
+  ]
+}

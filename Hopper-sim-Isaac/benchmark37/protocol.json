@@ -1,0 +1,22 @@
+{
+  "version": "benchmark37-events-v1",
+  "num_envs": 16,
+  "episodes_per_env": 8,
+  "development_seed": 7001,
+  "held_out_seeds": [170041, 170053, 170057],
+  "horizons_s": {"reference15": 15.0, "long301": 301.0},
+  "foot_error_max_m": 0.10,
+  "apex_min_world_m": 1.0,
+  "touchdown_tilt_max_deg": 15.0,
+  "contact_q_on_m": 0.002,
+  "takeoff_q_max_m": 0.001,
+  "takeoff_confirm_samples": 3,
+  "minimum_flight_samples": 5,
+  "initial_drop_counts_as_jump": false,
+  "target_progression": "none: original fixed target; missed attempts still consume jump index",
+  "first_pair_denominator": "all quota episodes, including no liftoff and physical death",
+  "native_target_height_also_reported": true,
+  "policy": "deterministic mean with checkpoint normalization frozen; original observation noise and dynamics DR retained",
+  "contact_detection": "spring compression proxy, not force sensor; verify against physical traces before promotion",
+  "long_horizon_status": "evaluation-only stress test; separate from exact 15s reference"
+}

@@ -1,0 +1,46 @@
+{
+  "status": "approved_for_stage3b_single_hop_simulation_development",
+  "decision_date": "2026-10-26",
+  "variant": "real_release_pretouch_foot_event",
+  "checkpoint": "outputs/benchmark37_stage3a_foot_event/train_seed42_20261026_053258_136967Z/model_199.pt",
+  "checkpoint_sha256": "ae4262c6a8d2c9ba75c9c4c4c58e7e9ebfec5dc2e667be1a18199421fa5a15e1",
+  "training_manifest": "outputs/benchmark37_stage3a_foot_event/train_seed42_20261026_053258_136967Z/manifest.json",
+  "frozen_comparator": "outputs/benchmark37_stage2e_pretouch/train_seed42_20261026_032020_799352Z/model_199.pt",
+  "frozen_comparator_sha256": "b61719e3f30d31c6bf959226d109dd93e5685e1aad5b89eaf35fac1e9808c97c",
+  "development_seed": 291071,
+  "fresh_seed": 883241,
+  "fresh_reference15": {
+    "upright_old": "outputs/benchmark37_stage2e_pretouch/eval_seed883241_20261026_062739_538335Z/summary.json",
+    "upright_new": "outputs/benchmark37_stage3a_foot_event/eval_seed883241_20261026_062904_787450Z/summary.json",
+    "tilt5_old": "outputs/benchmark37_stage2d_release_tilt/eval_seed883241_20261026_063036_559229Z/summary.json",
+    "tilt5_new": "outputs/benchmark37_stage3a_foot_event/eval_seed883241_20261026_063201_201802Z/summary.json"
+  },
+  "fresh_reference15_strict_first_pair_counts_out_of_128": {
+    "upright_old": 122,
+    "upright_new": 125,
+    "tilt5_old": 116,
+    "tilt5_new": 125
+  },
+  "long301": {
+    "old": "outputs/benchmark37_stage2e_pretouch/eval_seed883241_20261026_063833_387313Z/summary.json",
+    "new": "outputs/benchmark37_stage3a_foot_event/eval_seed883241_20261026_070450_763943Z/summary.json",
+    "episodes_each": 128,
+    "deaths_each": 0,
+    "strict_nonoverlap_pairs_old": "20971/21682",
+    "strict_nonoverlap_pairs_new": "21328/21676",
+    "strict_streak_p50_old": 201.5,
+    "strict_streak_p50_new": 317.5,
+    "all_completed_jumps_old": 43177,
+    "all_completed_jumps_new": 43158,
+    "foot_error_p95_cm_old": 3.704,
+    "foot_error_p95_cm_new": 2.467,
+    "foot_error_gt_10cm_count_old": 0,
+    "foot_error_gt_10cm_count_new": 2,
+    "foot_error_max_cm_old": 8.816,
+    "foot_error_max_cm_new": 17.944
+  },
+  "decision_scope": "Stationary 37-D simulation warm start for one-hop point landing research; preserve the old model as comparator. Rare new-model foot misses above 10 cm remain a tracked tail regression.",
+  "task_limit": "Fixed stationary target only; no directional, 0..0.8 m point landing, or two-hop performance claim",
+  "physics_limit": "About 80.8% of long-run motor w samples lie outside measured SysID thrust support, primarily below the lower bound",
+  "deployment_status": "not validated; simulation-only research candidate"
+}

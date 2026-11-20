@@ -1,0 +1,17 @@
+#usda 1.0
+(
+    defaultPrim = "Drone"
+    subLayers = [@./HopperAsset.usd@]
+)
+
+# The handoff gives whole-vehicle mass 0.155 kg and q=0 COM inertia.
+# Preserve the reference asset's 0.010 kg numerical SpringLeg. Assign Body
+# 0.145 kg, subtract the leg's 1e-5 kg m^2 diagonal inertia and the q=0
+# parallel-axis term (leg-body z offset -0.26135430681705474 m).
+# This is a q=0 proxy, not an independently identified two-link model.
+over "Drone" {
+    over "Body" {
+        float physics:mass = 0.145
+        float3 physics:diagonalInertia = (0.00036765048272165417, 0.00032697633812165414, 0.00054)
+    }
+}

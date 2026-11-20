@@ -1,0 +1,12 @@
+{
+  "handoff": "/home/terry/Downloads/参数辨识交接文档.md",
+  "handoff_sha256": "77afa8db36eff041ea7abbd91f3799e3924c8db5846cf358bc88f46d18759b79",
+  "files": {
+    "Quadhopper_PPO_Reference_SysID/quadhopper_env.py": "ede3bd4bb20e5e637942103a22de8328add61f31f2614938361ac42c3a8fed14",
+    "Quadhopper_PPO_Reference_SysID/my_hopper_cfg.py": "ed6d17665a3a0aa4e44097fd713e1644357cd21a5a2ea23c187eda2c99e3d892",
+    "Quadhopper_PPO_Reference_SysID/agents/rsl_rl_ppo_cfg.py": "3de36a3b5d47472d362929a5c748536e9fac1cbb1491c9f30cd367ce1fe6a3d0",
+    "Quadhopper_PPO_Reference_SysID/model/HopperAsset.usd": "2d1cfe4615dbc67d6b6c6351f6138556313314af21bd25e203d00cca33513ceb",
+    "Quadhopper_PPO_Reference_SysID/model/HopperSysID.usda": "e4215ff0cba8ff0bd6f6ae783dae76d7df02acceb0533b47abef48ce235ef769",
+    "Quadhopper_PPO_Reference_SysID/model/quadhopper_memory_power.pt": "a7f41bd0a576291cb7ca5a197cd70a03871b226d26a8e21d5f80bb8dc80fd086"
+  }
+}

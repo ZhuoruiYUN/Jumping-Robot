@@ -1,0 +1,22 @@
+{
+  "round": 46,
+  "best": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "best_eval": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/development",
+  "feedback": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/continuous_v51/round_00045/development",
+  "extra": null,
+  "phase": "training",
+  "last_round": 45,
+  "early_probe_parent": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "extended_parent": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "forecast_probe_parent": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "alternate_tried_for": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "distance_probe_parent": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "hold_peak_probe_parent": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "foot_bonus_probe_parent": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "startup_probe_parent": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "window_probe_parent": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "release_tail_parent": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "straight_descent_parent": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "rehearsal_balance_parent": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt",
+  "reversal_apex_parent": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/round_03/train/model_49.pt"
+}

@@ -1,0 +1,37 @@
+{
+  "version": "full_assembly_boxes_swept_v1",
+  "bounds_q0_min_m": [
+    -0.18130000000000002,
+    -0.18130000000000002,
+    -0.28500001
+  ],
+  "bounds_all_q_max_m": [
+    0.18130000000000002,
+    0.18130000000000002,
+    0.008
+  ],
+  "dimensions_q0_m": [
+    0.36260000000000003,
+    0.36260000000000003,
+    0.29300001000000003
+  ],
+  "dimensions_q087_m": [
+    0.36260000000000003,
+    0.36260000000000003,
+    0.20600001000000004
+  ],
+  "sphere_center_body_m": [
+    0.0,
+    0.0,
+    -0.138500005
+  ],
+  "D_env_m": 0.5905984472211218,
+  "sphere_construction": "half diagonal of union AABB over q=0..0.087m",
+  "D0_m": 0.67918821430429,
+  "rotor_radius_m": 0.1,
+  "rotor_half_height_m": 0.008,
+  "rotor_source": "provisional engineering allowance; measured blade sweep unavailable",
+  "asset_audit": "composed HopperCalibrated20261028.usda: body/arms/motors/base/leg/rod/foot collision present; rotor sweep absent",
+  "delta_m": 0.002,
+  "delta_source": "simulation numerical engineering margin only; not a hardware error budget"
+}

@@ -1,0 +1,21 @@
+{
+  "status": "provisional_stationary_baseline_for_development",
+  "decision_date": "2026-10-24",
+  "variant": "real_release_energy2cm",
+  "checkpoint": "outputs/benchmark37_stage2c_energy2cm/train_seed42_20261023_153249_933187Z/model_1332.pt",
+  "checkpoint_sha256": "917db1e52ac61da28e6f6b3bd9485c8f0cc0963907e526cdc620ca1fe7b2ce16",
+  "development_summary": "outputs/benchmark37_stage2c_energy2cm/eval_seed7001_20261023_171501_538034Z/summary.json",
+  "training_seed": 42,
+  "development_seed": 7001,
+  "fresh_sanity_seed": 291071,
+  "fresh_sanity_summary": "outputs/benchmark37_stage2c_energy2cm/eval_seed291071_20261023_173336_608508Z/summary.json",
+  "fresh_sanity_review": "passed for development: 126/128 first, 127/128 second, 125/128 strict first pairs; 0 observed deaths; proceed to release-attitude evaluation, not new training",
+  "release_tilt_summary": "outputs/benchmark37_stage2d_release_tilt/eval_seed291071_20261023_173933_361076Z/summary.json",
+  "release_tilt_review": "failed robustness: 105/128 physical deaths and 5/128 strict first pairs; stationary source baseline retained; next stage needs isolated release-attitude robustness training before point landing",
+  "geometry_review": "21.16 cm maximum foot-geometry discrepancy unresolved in fallen episodes; 26 deaths also occur in episodes whose discrepancy stays <=1 mm; do not dismiss all failures as geometry or claim anomaly fixed",
+  "seed_status_at_registration": "absent from existing outputs manifest.json and summary.json on 2026-10-24",
+  "next_probe": "same checkpoint, reference15, release roll/pitch each uniform +/-5 deg, yaw=0",
+  "development_rule": "one fresh nominal-seed check and one attitude probe inform next work; no automatic promotion or retraining",
+  "final_validation": "additional evaluation/training seeds and long-horizon tests deferred until candidate stabilizes",
+  "deployment_status": "not validated; simulation-only development baseline"
+}

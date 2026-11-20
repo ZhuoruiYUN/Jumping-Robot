@@ -47,6 +47,7 @@ events.out.tfevents.*
 *.stl
 *.usd
 *.usda
+!Hopper-sim-Isaac/Quadhopper_Planner_Random/assets/SysID20261020AirborneSpringProxy.usda
 *.usdc
 *.usdz
 *.obj
@@ -64,6 +65,19 @@ events.out.tfevents.*
 !Hopper-sim-Isaac/Quadhopper_Stable/model/Jump Base.STL
 !Hopper-sim-Isaac/Quadhopper_Stable/model/Jump Leg.STL
 !Hopper-sim-Isaac/Quadhopper_Stable/model/OriginJumpHopperAsset.usda
+
+# Locked simulation assets and the motor power estimator used by Benchmark37.
+!Hopper-sim-Isaac/Quadhopper_PPO_Benchmark37/model/HopperAsset.usd
+!Hopper-sim-Isaac/Quadhopper_PPO_Benchmark37/model/quadhopper_memory_power.pt
+!Hopper-sim-Isaac/Quadhopper_PPO_Reference_SysID/model/HopperAsset.usd
+!Hopper-sim-Isaac/Quadhopper_PPO_Reference_SysID/model/HopperSysID.usda
+!Hopper-sim-Isaac/Quadhopper_PPO_Reference_SysID/model/quadhopper_memory_power.pt
+!Hopper-sim-Isaac/benchmark37/HopperCalibrated20261028.usda
+
+# Byte-exact historical stationary source assets restored from 46c31fd.
+!Hopper-sim-Isaac/Quadhopper_Stationary_SysID/_baseline/model/HopperAsset.usd
+!Hopper-sim-Isaac/Quadhopper_Stationary_SysID/_baseline/model/quadhopper_memory_power.pt
+!Hopper-sim-Isaac/Quadhopper_Stationary_SysID/assets/StationarySysIDProxy.usda
 
 # Selected deployable policies and the self-contained professor-side MuJoCo
 # parity package. Training runs and intermediate checkpoints remain ignored.

@@ -1,0 +1,73 @@
+{
+  "version": "fixed_wide_first_rebound_v1",
+  "status": "frozen_for_r1",
+  "envelope": {
+    "version": "full_assembly_boxes_swept_v1",
+    "bounds_q0_min_m": [
+      -0.18130000000000002,
+      -0.18130000000000002,
+      -0.28500001
+    ],
+    "bounds_all_q_max_m": [
+      0.18130000000000002,
+      0.18130000000000002,
+      0.008
+    ],
+    "dimensions_q0_m": [
+      0.36260000000000003,
+      0.36260000000000003,
+      0.29300001000000003
+    ],
+    "dimensions_q087_m": [
+      0.36260000000000003,
+      0.36260000000000003,
+      0.20600001000000004
+    ],
+    "sphere_center_body_m": [
+      0.0,
+      0.0,
+      -0.138500005
+    ],
+    "D_env_m": 0.5905984472211218,
+    "sphere_construction": "half diagonal of union AABB over q=0..0.087m",
+    "D0_m": 0.67918821430429,
+    "rotor_radius_m": 0.1,
+    "rotor_half_height_m": 0.008,
+    "rotor_source": "provisional engineering allowance; measured blade sweep unavailable",
+    "asset_audit": "composed HopperCalibrated20261028.usda: body/arms/motors/base/leg/rod/foot collision present; rotor sweep absent",
+    "delta_m": 0.002,
+    "delta_source": "simulation numerical engineering margin only; not a hardware error budget"
+  },
+  "center_local_m": [
+    0.27,
+    0.0,
+    0.85
+  ],
+  "normal_world": [
+    1.0,
+    0.0,
+    0.0
+  ],
+  "inner_radius_m": 0.339594107152145,
+  "axial_thickness_m": 0.02,
+  "tube_radial_width_m": 0.025,
+  "delta_m": 0.002,
+  "landing_xy_m": [
+    0.6,
+    0.0
+  ],
+  "next_edge_xy_m": [
+    0.4,
+    0.0
+  ],
+  "designated_flight": 1,
+  "completion_reward": 12.0,
+  "reward_source": "one full-body event, comparable to max inherited first-hop touchdown12",
+  "geometry_source": "virtual engineering ring; no physical ring measurement",
+  "observation_version": "stage4l41_plus_ring8_v1",
+  "episode_s": 15.0,
+  "r0_evidence": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark37_ring_r1/diagnose_seed42_20261104_131358_858030Z/placement_diagnostic.json",
+  "r0_trajectory": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark37_ring_r1/diagnose_seed42_20261104_131358_858030Z/source_trajectory.pt",
+  "r0_source_complete_samples": 5,
+  "r0_minimum_clearance_m": 0.003287583589553833
+}

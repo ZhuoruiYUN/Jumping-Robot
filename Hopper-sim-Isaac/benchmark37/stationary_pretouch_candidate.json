@@ -1,0 +1,40 @@
+{
+  "status": "stage2c_and_stage2d_upright_long301_passed_for_stage3_simulation_development",
+  "decision_date": "2026-10-26",
+  "variant": "real_release_pretouch_goal10",
+  "checkpoint": "outputs/benchmark37_stage2e_pretouch/train_seed42_20261026_032020_799352Z/model_199.pt",
+  "checkpoint_sha256": "b61719e3f30d31c6bf959226d109dd93e5685e1aad5b89eaf35fac1e9808c97c",
+  "training_manifest": "outputs/benchmark37_stage2e_pretouch/train_seed42_20261026_032020_799352Z/manifest.json",
+  "training_seed": 42,
+  "development_seed": 291071,
+  "fresh_check_seed": 481217,
+  "reference15_evaluations": {
+    "development_upright": "outputs/benchmark37_stage2e_pretouch/eval_seed291071_20261026_042501_495742Z/summary.json",
+    "development_tilt5": "outputs/benchmark37_stage2d_release_tilt/eval_seed291071_20261026_042607_328915Z/summary.json",
+    "fresh_upright": "outputs/benchmark37_stage2e_pretouch/eval_seed481217_20261026_044053_288241Z/summary.json",
+    "fresh_tilt5": "outputs/benchmark37_stage2d_release_tilt/eval_seed481217_20261026_044159_519977Z/summary.json"
+  },
+  "strict_first_pair_counts_out_of_128": {
+    "development_upright": 121,
+    "development_tilt5": 119,
+    "fresh_upright": 124,
+    "fresh_tilt5": 123
+  },
+  "reference15_deaths": 0,
+  "long301_upright_summary": "outputs/benchmark37_stage2e_pretouch/eval_seed481217_20261026_044831_105684Z/summary.json",
+  "long301_upright_review": {
+    "episodes": 128,
+    "survived_to_timeout": 128,
+    "completed_jumps_p05": 335,
+    "strict_nonoverlap_pair_rate": 0.9648646159513723,
+    "all_completed_jumps": 43236,
+    "all_apex_below_1m_count": 640,
+    "foot_error_max_m": 0.10447660833597183
+  },
+  "release_contract": "root-link 0.8..1.2 m; motors stopped before release; policy enabled immediately after release",
+  "next_stage_release_scope": "retain root-link 0.8..1.2 m and established roll/pitch range up to +/-5 deg with upright samples; XY offset and yaw zero; do not add further release randomization while studying attitude, 1.0 m apex and 10 cm foot landing",
+  "task_limit": "37-D fixed stationary target, no next landing target, no directional claims",
+  "model_limit": "about 81% of motor-state samples outside measured SysID thrust support; primarily below lower bound",
+  "next_gate": "stage3 single-hop point landing: per predeclared distance/direction bucket first strict >=90%, mean foot error <=5 cm, p95 <=10 cm, touchdown tilt p95 <=10 deg, 1.0 m apex retained; tilt5 long evaluation currently unsupported",
+  "deployment_status": "not validated; simulation-only development candidate"
+}

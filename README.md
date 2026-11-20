@@ -35,9 +35,9 @@ The strict two-hop measure requires **both** foot placements within 10 cm of the
 
 The 301 s stress test extends beyond the 61 s training limit. No physical death was observed in these finite frozen-policy evaluations, while the 200-iteration V38 final-chain training recorded seven physical death events. Zero observed deaths in a finite simulation test does not establish hardware safety. Accuracy under strong arbitrary-direction stress remains below the project's goal. Matched V39 direction-mix, V40 wider foot-reward and V41 per-hop 10 cm bonus variants were evaluated and **not selected**. In the V41 seed 583 stress comparison, the experimental bonus lowered arbitrary-direction strict two-hop success from 57.35% to 56.29%, although reverse success rose from 64.98% to 70.32%; it failed the predeclared all-scenario gate.
 
-## Reproducing the current task
+## Reproducing Isaac Sim experiments
 
-The Stage 2 implementation is in [`Hopper-sim-Isaac/Quadhopper_Planner_Random/`](Hopper-sim-Isaac/Quadhopper_Planner_Random/README.md). Training and evaluation enter through [`run_tracking_recovery.py`](Hopper-sim-Isaac/run_tracking_recovery.py), [`train_tracking_recovery.py`](Hopper-sim-Isaac/train_tracking_recovery.py), and the V37–V41 shell wrappers in `Hopper-sim-Isaac/`. Use the installed Isaac Sim `python.sh` through those wrappers. Later stages require the local checkpoint produced by the preceding stage; this Git repository provides the source and configuration, not the training weights or generated reports.
+For the current OBS73 omni-directional task, use the [V51 training handoff](Hopper-sim-Isaac/TRAINING_V51.md). The Stage 2 results above correspond to the Random Planner implementation and launchers preserved in commit `54867f4`.
 
 ## Earlier work
 

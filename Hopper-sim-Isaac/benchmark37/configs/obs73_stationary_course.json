@@ -1,0 +1,112 @@
+{
+  "version": "obs73_stationary_foundation_v1",
+  "status": "ready_for_stationary",
+  "envelope": {
+    "version": "full_assembly_disk_prisms_swept_v2",
+    "bounds_q0_min_m": [
+      -0.18130000000000002,
+      -0.18130000000000002,
+      -0.28500001
+    ],
+    "bounds_all_q_max_m": [
+      0.18130000000000002,
+      0.18130000000000002,
+      0.008
+    ],
+    "dimensions_q0_m": [
+      0.36260000000000003,
+      0.36260000000000003,
+      0.29300001000000003
+    ],
+    "dimensions_q087_m": [
+      0.36260000000000003,
+      0.36260000000000003,
+      0.20600001000000004
+    ],
+    "sphere_center_body_m": [
+      0.0,
+      0.0,
+      -0.138500005
+    ],
+    "D_env_m": 0.5905984472211218,
+    "sphere_construction": "half diagonal of union AABB over q=0..0.087m",
+    "D0_m": 0.67918821430429,
+    "rotor_radius_m": 0.1,
+    "rotor_half_height_m": 0.008,
+    "rotor_source": "provisional engineering allowance; measured blade sweep unavailable",
+    "asset_audit": "composed HopperCalibrated20261028.usda: body/arms/motors/base/leg/rod/foot collision present; rotor sweep absent",
+    "delta_m": 0.002,
+    "delta_source": "simulation numerical engineering margin only; not a hardware error budget",
+    "rotor_enclosure": "32-sided circumscribed disk prism, same100mm engineering radius and8mm half-height"
+  },
+  "center_local_m": [
+    0.27,
+    0.0,
+    0.85
+  ],
+  "normal_world": [
+    1.0,
+    0.0,
+    0.0
+  ],
+  "inner_radius_m": 0.339594107152145,
+  "axial_thickness_m": 0.02,
+  "tube_radial_width_m": 0.025,
+  "delta_m": 0.002,
+  "landing_xy_m": [
+    0.0,
+    0.0
+  ],
+  "next_edge_xy_m": [
+    0.0,
+    0.0
+  ],
+  "designated_flight": 2,
+  "completion_reward": 0.0,
+  "reward_source": "inherited Stage4l stationary/height/landing rewards plus existing pitch stability costs; no ring reward",
+  "geometry_source": "same frozen engineering ring and rotor allowance; randomized center height only",
+  "observation_version": "obs65_direct_motor_plus_ring8_v1",
+  "episode_s": 15.0,
+  "r0_evidence": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark37_ring_r1/eval_seed7001_20261105_062259_257666Z/summary.json",
+  "r0_source_complete_samples": 66,
+  "r0_minimum_clearance_m": 4.124641418457031e-05,
+  "geometry_correction": "exact convex radial minimum, circle-enclosing rotor prisms,8 swept subintervals for ambiguous segments",
+  "source_course": "benchmark37/configs/ring_obs73_course.json",
+  "contact_diagnostic": "outputs/benchmark37_ring_r1/contact_diagnostic_seed7001_20261105_035854_887547Z/contacts.json",
+  "r0_evidence_scope": "V2 feasibility demonstrated by existing49D ring policy:66/128 full crossings; not Stage4l41D evidence",
+  "feasibility_checkpoint": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark37_ring_r1/train_seed42_20261104_132720Z/model_49.pt",
+  "pretraining_joint_success_count": 61,
+  "pretraining_eval_episodes": 128,
+  "pretraining_eval_seed": 7001,
+  "frozen_for": "manual OBS73 stationary training from scratch; same73D contract for subsequent ring transfer",
+  "inherited_v1_r0_trajectory": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark37_ring_r1/diagnose_seed42_20261104_131358_858030Z/source_trajectory.pt",
+  "task": "obs73_stationary_foundation_v1",
+  "sequence": [
+    "release_drop",
+    "continuous_stationary_hops"
+  ],
+  "target_queue": "P_t=P_next=P_third=S throughout each episode",
+  "termination": "physical death or15s timeout; failed precision landings may retry; no strict-landing completion reset",
+  "randomness": "inherited release0.8..1.2m/attitude/motor/physics DR; irrelevant ring context Z0.8..1.2m fixed per episode; stationary target fixed at release XY",
+  "diagnosis": "outputs/benchmark37_ring_min_loop_height/contact_diagnostic_seed7001_20261105_132136_858059Z/diagnosis.json",
+  "stability_validation": "candidate coefficients; post-training continuous-hop pitch validation is required",
+  "feasibility_scope": "stationary foundation; ring event/collision detector disabled; no R0 prerequisite",
+  "observation_source_manual": "OBS65_\u89c2\u6d4b\u63a5\u53e3\u4ea4\u63a5\u624b\u518c.md (2026-11-06)",
+  "observation_changes": "65-layout A-point states, two state/action snapshots, three target slots, event histories, shadow contact; append existing ring8. Action memory uses accepted direct motor commands, NOT CTBR.",
+  "stationary_pretraining": {
+    "version": "continuous_stationary_pitch_v1",
+    "apex_target_m": 1.0,
+    "pitch_weight": 80.0,
+    "pitch_rate_weight": 2.0,
+    "pitch_work_weight": 500.0,
+    "free_spring_q_max_m": 0.0001,
+    "free_spring_qdot_max_m_s": 0.05,
+    "ring_context_height_range_m": [
+      0.8,
+      1.2
+    ],
+    "stability_activation": "after initial drop; pitch work only during post-drop free flight",
+    "strict_metrics": "confirmed flight; apex>=1m,foot XY error<=0.10m,tilt<=15deg; strict failures do not terminate",
+    "subsequent_transfer": "copy foundation65 input weights/recurrent/head/normalizers/std; zero ring8 input weights, reset ring8 normalizers; fresh optimizer and iteration0"
+  }
+}

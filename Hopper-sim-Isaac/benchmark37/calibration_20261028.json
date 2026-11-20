@@ -1,0 +1,20 @@
+{
+  "revision": "sysid_20261028_spring_air_v1",
+  "provenance": "User supplied calibration screenshots in this chat on 2026-10-28; values supersede the old handoff for mass, geometry, spring and air only",
+  "mass_kg": {"Body": 0.1456, "SpringLeg": 0.01, "whole": 0.1556},
+  "whole_q0_inertia_kgm2": [0.001016642785, 0.0009759686404, 0.00055],
+  "inertia_scope": "No new inertia supplied: retain previous identified whole q=0 inertia, reallocate Body using new mass and foot-center offset; two-link proxy",
+  "geometry": {"root_A_to_ground_q0_m": 0.285, "foot_radius_m": 0.012, "foot_center_z_body_q0_m": -0.273, "compression_travel_m": 0.087},
+  "spring": {"total_stiffness_N_m": 560.0, "total_damping_Ns_m": 0.6},
+  "air": {
+    "axis": "root Body Z, upward positive; air at rest in world",
+    "descending_saturation_N_whole": 0.292447,
+    "descending_transition_speed_m_s": 0.5,
+    "ascending_quadratic_Ns2_m2_whole": 0.0269962,
+    "lateral_damping_rate_s_inv": {"Body": 0.05, "SpringLeg": 0.01},
+    "physx_linear_damping_s_inv": 0.0,
+    "allocation": "Each link uses its own COM velocity projected onto root Body axes; axial coefficients split by nominal link mass/whole mass. Lateral F=-m_link*rate_link*v_xy. Whole formula recovered when both links share velocity; multi-link allocation is an engineering extension, not a separate identification"
+  },
+  "timing": {"physics_dt_s": 0.005, "decimation": 2, "policy_dt_s": 0.01},
+  "coordinates": {"simulation_ground_world_z_m": 0.0, "vicon_ground_world_z_m": 0.025, "q0_A_vicon_z_m": 0.310, "fully_compressed_A_vicon_z_m": 0.223, "vicon_to_height_formula": "h_A=z_A_vicon-0.025; root A is not whole COM or foot center"}
+}

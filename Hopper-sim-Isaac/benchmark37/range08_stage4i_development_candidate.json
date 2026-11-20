@@ -1,0 +1,17 @@
+{
+  "status": "development_candidate_full_range_precision_pending",
+  "checkpoint": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark37_stage4i_foot_excess_control/train_seed42_20261029_142556_238686Z/model_49.pt",
+  "checkpoint_sha256": "1459f712168be5bd05db4d55c8a9516866016dafd51d7c146035ad445a8640c5",
+  "foot_excess_scale": 0.0,
+  "observation_dim": 41,
+  "hop_range_m": [
+    0.0,
+    0.8
+  ],
+  "strict_first_pair_hits": 255,
+  "episodes": 272,
+  "evaluation_seed": 7001,
+  "evaluation_summary": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark37_stage4i_foot_excess_control/eval_seed7001_20261030_042218_335095Z/summary.json",
+  "decision_report": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark37_stage4i_foot_excess_control/comparison_seed7001_20261030_042429_073244Z/review_20261030_053319_055810Z/review.json",
+  "limitation": "Selected over K50 in this round only; not an all-metric winner over Stage4h; no automatic default or deployment change"
+}

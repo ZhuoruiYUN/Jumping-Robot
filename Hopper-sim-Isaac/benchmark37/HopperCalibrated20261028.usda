@@ -1,0 +1,30 @@
+#usda 1.0
+(
+    defaultPrim = "Drone"
+    subLayers = [@../Quadhopper_PPO_Reference_SysID/model/HopperSysID.usda@]
+)
+
+# q=0 whole-vehicle COM inertia retained from previous identification.
+# New mass and leg offset require a new Body inertia proxy allocation.
+over "Drone" (
+    customData = {
+        string calibration_revision = "sysid_20261028_spring_air_v1"
+        string hopper_measurements_json = '{"revision":"sysid_20261028_spring_air_v1","mass":{"body_kg":0.1456,"spring_leg_kg":0.01,"total_kg":0.1556},"foot":{"center_m":[0,0,-0.273],"radius_m":0.012,"bottom_z_m":-0.285},"joint":{"travel_m":0.087,"stiffness_n_per_m":560,"damping_n_s_per_m":0.6},"static_on_ground":{"body_origin_height_m":0.285},"scope":"Physical q=0 leg/foot offset updated; inherited CAD meshes and decorative spring curves are not a remeasured CAD reconstruction"}'
+    }
+) {
+    over "Body" {
+        float physics:mass = 0.1456
+        float3 physics:diagonalInertia = (0.0003092505999100257, 0.00026857645531002566, 0.00054)
+        float physxRigidBody:linearDamping = 0
+    }
+    over "SpringLeg" {
+        double3 xformOp:translate = (0, 0, -0.273)
+        float physxRigidBody:linearDamping = 0
+    }
+    over "center_spring_joint" {
+        float physics:upperLimit = 0.087
+        point3f physics:localPos1 = (0, 0, 0.198)
+        float drive:linear:physics:stiffness = 560
+        float drive:linear:physics:damping = 0.6
+    }
+}

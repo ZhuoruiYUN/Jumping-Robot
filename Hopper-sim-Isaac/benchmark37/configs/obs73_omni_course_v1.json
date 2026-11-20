@@ -1,0 +1,317 @@
+{
+  "envelope": {
+    "version": "full_assembly_disk_prisms_swept_v2",
+    "bounds_q0_min_m": [
+      -0.18130000000000002,
+      -0.18130000000000002,
+      -0.28500001
+    ],
+    "bounds_all_q_max_m": [
+      0.18130000000000002,
+      0.18130000000000002,
+      0.008
+    ],
+    "dimensions_q0_m": [
+      0.36260000000000003,
+      0.36260000000000003,
+      0.29300001000000003
+    ],
+    "dimensions_q087_m": [
+      0.36260000000000003,
+      0.36260000000000003,
+      0.20600001000000004
+    ],
+    "sphere_center_body_m": [
+      0.0,
+      0.0,
+      -0.138500005
+    ],
+    "D_env_m": 0.5905984472211218,
+    "sphere_construction": "half diagonal of union AABB over q=0..0.087m",
+    "D0_m": 0.67918821430429,
+    "rotor_radius_m": 0.1,
+    "rotor_half_height_m": 0.008,
+    "rotor_source": "provisional engineering allowance; measured blade sweep unavailable",
+    "asset_audit": "composed HopperCalibrated20261028.usda: body/arms/motors/base/leg/rod/foot collision present; rotor sweep absent",
+    "delta_m": 0.002,
+    "delta_source": "simulation numerical engineering margin only; not a hardware error budget",
+    "rotor_enclosure": "32-sided circumscribed disk prism, same100mm engineering radius and8mm half-height"
+  },
+  "center_local_m": [
+    0.27,
+    0.0,
+    0.85
+  ],
+  "normal_world": [
+    1.0,
+    0.0,
+    0.0
+  ],
+  "inner_radius_m": 0.339594107152145,
+  "axial_thickness_m": 0.02,
+  "tube_radial_width_m": 0.025,
+  "delta_m": 0.002,
+  "observation_version": "obs65_direct_motor_plus_ring8_v1",
+  "episode_s": 15.0,
+  "task": "obs73_omni_ground_targets_v1",
+  "version": "obs73_omni_v1_short_012_020_from_vertical_v23",
+  "status": "fixed_short_bridge",
+  "landing_xy_m": [
+    0.0,
+    0.0
+  ],
+  "next_edge_xy_m": [
+    0.0,
+    0.0
+  ],
+  "completion_reward": 0.0,
+  "sequence": [
+    "release_drop",
+    "stationary_first_strict_hop",
+    "short_omnidirectional_targets_with_retry"
+  ],
+  "initialization": "v23 stationary73D source; fold formerly duplicate target weights into Pt,zero distinct Pnext columns only; retain ring8/normalizers/recurrent heads/std; fresh optimizer/iteration0",
+  "termination": "physical death or15s; retain targets and histories across nonterminal landing attempts",
+  "reward": "Retain v23 flight,height,landing,precision and stability rewards without reweighting; strict target queue advance only. No ring rewards,collisions or B1-B4 power/progress additions.",
+  "evaluation": "One seed7001/128 first15s mixed64+64 response evaluation after user training; full360deg first moving-edge coverage; report moving first-attempt and retry metrics separately.",
+  "stationary_pretraining": {
+    "version": "vertical_base_no_extra_pitch_cost_v1",
+    "apex_target_m": 1.0,
+    "pitch_weight": 0.0,
+    "pitch_rate_weight": 0.0,
+    "pitch_work_weight": 0.0,
+    "free_spring_q_max_m": 0.0001,
+    "free_spring_qdot_max_m_s": 0.05,
+    "ring_context_height_range_m": [
+      0.8,
+      1.2
+    ]
+  },
+  "vertical_pretraining": {
+    "version": "fixed1m_no_low_height_curriculum_v1",
+    "steps_per_update": 256,
+    "window_updates": 4,
+    "minimum_valid_landings": 64,
+    "promotion_target_landing_rate": 0.8,
+    "training_height_tolerance_m": 0.0,
+    "levels": [
+      {
+        "name": "fixed1m",
+        "release_height_m": [
+          0.8,
+          1.2
+        ],
+        "target_apex_m": 1.0,
+        "tilt_limit_deg": 5.0,
+        "upright_fraction": 0.2
+      }
+    ],
+    "landing_reward": {
+      "scale": 6.0,
+      "apex_width_m": 0.15,
+      "foot_width_m": 0.05,
+      "tilt_width_deg": 15.0
+    },
+    "promotion": "single fixed1m target throughout training; no0.6m/0.8m levels or promotion gate",
+    "boundary": "new level applies only on episode reset; existing target and release stay fixed within each episode",
+    "unchanged": "73D interface,4direct motors,calibratedv2 physics/DR,delay/lag,LSTM,PPO,15s; no control assists",
+    "jump_cycle_reward": {
+      "version": "event_xy_goal_with_reference_flight_v1",
+      "gamma": 0.99,
+      "energy_margin_m": 0.04,
+      "height_quality": "1.02m Gaussian/squared-rise quality remains only in event XY/goal shaping; flight height/apex use native dense kernels",
+      "events": "XY/goal only at complete touchdown; reference_flight_reward overrides energy/height/apex and positive foot payment",
+      "energy": "overridden by reference_flight_reward: native positive continuous energy feedback at1.04m",
+      "apex_margin_m": 0.02,
+      "strict_goal_bonus": true,
+      "completion": "goal/landing completion bonus requires apex>=1m, foot error<=10cm and tilt<=15deg; graded XY/apex shaping remains available below1m"
+    },
+    "max_updates_without_valid_landing": 128,
+    "attitude_refinement": {
+      "version": "post_drop_tilt_and_roll_pitch_rate_v1",
+      "tilt_weight": 80.0,
+      "roll_pitch_rate_weight": 4.0,
+      "scope": "after initial contact, including ground preparation/ascent/apex/descent; physical terminals excluded",
+      "units": "tilt radians squared, body wx/wy radians-per-second squared; both multiplied by control dt",
+      "rationale": "case115 oscillates in free ascent while touchdown attitude is small; baseline angle/rate penalties underweight whole-flight motion",
+      "evaluation_targets": {
+        "mean_pitch_span_deg_max": 5.0,
+        "pitch_span_gt10_rate_max": 0.05
+      }
+    },
+    "leg_swing_penalty": {
+      "version": "free_flight_foot_relative_xy_speed_v1",
+      "weight": 120.0,
+      "free_spring_q_max_m": 0.001,
+      "signal": "actual SpringLeg link-origin velocity minus root-link-origin velocity, world XY, m/s",
+      "scope": "post-drop CANDIDATE or FLIGHT; q<=1mm; alive; no motor/action/observation changes",
+      "purpose": "suppress leg-tip whipping from roll/pitch rotation while excluding common horizontal translation and vertical spring speed",
+      "reward": "-120*sum((v_foot_xy-v_root_xy)^2)*dt; nonpositive, with squared speed scaling"
+    },
+    "yaw_refinement": {
+      "version": "post_drop_stationary_heading_hold_v1",
+      "heading_weight": 40.0,
+      "rate_weight": 2.0,
+      "target_heading_rad": 0.0,
+      "scope": "after first contact, entire cycle; alive; same zero heading as current release and native yaw reward",
+      "error": "atan2(sin(yaw-target),cos(yaw-target)), quaternion wxyz, heading in world frame",
+      "rate": "body angular velocity z, rad/s",
+      "reward": "-(40*heading_error_rad^2+2*omega_body_z^2)*dt; additive to native yaw/angular penalties",
+      "observation": "existing quaternion/body angular velocity already supply both signals; OBS73 unchanged",
+      "metrics": "post-drop heading-error RMS, yaw-rate RMS and per-episode peak heading; strict1m criterion unchanged"
+    },
+    "reference_flight_reward": {
+      "version": "stage4l_flight_and_landing_kernels_event_xy_v1",
+      "energy_margin_m": 0.04,
+      "height_width_m": 0.4,
+      "apex_height_width_m": 0.18,
+      "apex_speed_width_m_s": 0.35,
+      "apex_deficit_scale": 50.0,
+      "reference_stationary_run": "outputs/benchmark37_stage2e_pretouch/train_seed42_20261026_032020_799352Z",
+      "reference_calibrated_run": "outputs/benchmark37_stage4l_landing_gain/train_seed42_20261102_034630_836993Z",
+      "continuous": "Native positive continuous energy centre1.04m retained; dense height/apex reward centres1.04m with unchanged scales/widths/dt; command1m and strict1m unchanged",
+      "landing": "6*exp(-0.5*(e_foot/0.05m)^2), once, gated at1m/10cm/15deg; no first-two multiplier for this stationary task",
+      "underheight": "-50*relu(1m-final_peak), once at valid touchdown, independent of foot error/tilt; initial drop excluded",
+      "intentional_difference": "XY/goal remain once at touchdown (existing cycle quality), to avoid paying for stationary hovering;73D/v2 physics and existing stabilizers retained",
+      "evidence_limit": "Historical stable37D stationary results are design references, not a performance guarantee for73D under calibratedv2 physics",
+      "height_reward_margin_m": 0.04,
+      "margin_rationale": "v18 fixed64+64 gate:148 jump5+ under1m,127 within1cm; align dense height/apex centre1.04m with unchanged1.04m energy centre. Strict height command/threshold1m unchanged.",
+      "margin_validation": "CPU config/kernel/checkpoint-interface checks only; user-started training and one new fixed128 evaluation required"
+    },
+    "rotation_work_penalty": {
+      "version": "free_flight_positive_roll_pitch_motor_work_v1",
+      "weight": 500.0,
+      "free_spring_q_max_m": 0.001,
+      "signal": "sum over body x,y of max(actual delayed/lagged applied motor torque_i * body omega_i,0), watts",
+      "scope": "post-drop CANDIDATE/FLIGHT, spring q<=1mm, alive; contact/drop excluded",
+      "reward": "-500*sum(relu(tau_i*omega_i)*retained_factor_i)*dt, i=roll,pitch; legacy factor1 below10deg, during outward motion or non-restoring torque. For net tilt-decreasing recovery, factor ramps1->0.25 from10->20deg; braking remains zero cost; never positive.",
+      "coefficient_source": "existing ring targeted pitch_work_weight=500; extend identically to roll, no sweep",
+      "evidence": "v9 case62 bounded15s replay:15 completed hops,5 pitch spans>10deg,max16.31deg; worst hop pitch rate1.886rad/s,positive pitch work0.002594J (new cost1.297); no claim of exact fixed128 replay",
+      "unchanged": "v8 height/energy/apex/foot/leg/tilt/yaw costs,1m/10cm/15deg scoring,OBS73,4motor actions,calibratedv2 physics/DR,15s,LSTM/PPO",
+      "training_source": "outputs/benchmark73_vertical/train_v8_seed42_20261110_144540Z/model_99.pt",
+      "validation_limit": "Reward wiring/startup only until manual PPO training and one fixed128 evaluation; improvement not yet established",
+      "upright_recovery": {
+        "start_tilt_deg": 10.0,
+        "full_tilt_deg": 20.0,
+        "relief_fraction": 0.75
+      }
+    },
+    "flight_quality": {
+      "version": "stationary_whole_flight_precision_quality_v1",
+      "span_free_deg": 5.0,
+      "span_width_deg": 5.0,
+      "rate_free_rad_s": 0.35,
+      "rate_width_rad_s": 0.35,
+      "quality": "exp(-0.5*(relu((max(roll_span,pitch_span)-5deg)/5deg)^2+relu((rms_body_wxy-0.35rad_s)/0.35rad_s)^2))",
+      "scope": "CANDIDATE/FLIGHT q<=2mm and abs(spring_qdot)<=0.05m/s; initial drop and impact/compression transients excluded; existing stationary free-spring-rate criterion",
+      "payment": "Once valid touchdown: subtract (1-quality)*(positive event XY+goal+foot); no extra dt factor; strict scorer unchanged",
+      "rationale": "v10 case59 bounded replay hop2 pitch_span20.86deg still strict with touchdown tilt4.20deg/foot4.02cm; final pose alone misses air oscillation",
+      "threshold_basis": "5deg matches existing mean-pitch-span target;0.35rad/s permits normal v10 rates near0.29rad/s with roll allowance while downweighting0.8rad/s whipping; no sweep",
+      "unchanged": "v10 height/energy/apex/K50,all existing costs,PPO,OBS73,4direct motors,calibratedv2 physics/DR,15s; no CTBR/LQR/controller",
+      "training_source": "outputs/benchmark73_vertical/train_v10_seed42_20261111_051707Z/model_99.pt",
+      "validation_limit": "Reward behavior/startup only; needs user-started training and one new checkpoint evaluation; no stability claim",
+      "free_spring_qdot_max_m_s": 0.05,
+      "settled_pitch_refinement": {
+        "warmup_landings": 4,
+        "span_free_deg": 3.0,
+        "span_width_deg": 3.0,
+        "rate_free_rad_s": 0.2,
+        "rate_width_rad_s": 0.2,
+        "reward": "jump5+: retain Q_v12 and all original precision payments; add -4*(1-exp(-0.5*((relu(pitch_span-3deg)/3deg)^2+(relu(pitch_rate_RMS-0.2)/0.2)^2))) once valid landing; no dt factor",
+        "scope": "same genuine free-spring flight samples as v12; q<=2mm and abs(qdot)<=0.05m/s, initial drop/contact impulses excluded",
+        "rationale": "v15 recovered later strict93.05%,foot P95=4.77cm and0deaths, but pitch4.29deg/0.230rad_s misses3deg/0.2 targets; increase only independent cap2->4, warm-start v15; not a demonstrated improvement",
+        "unchanged": "first4/base Q_v12/height1.02m/energy1.04m/K50/foot5cm Gaussian/strict1m-10cm-15deg/all existing costs/PPO/OBS73/direct motors/physics/DR/15s retained; no v13 bonus",
+        "mode": "bounded_cost",
+        "cost_scale": 4.0,
+        "eligibility": "valid confirmed jump5+ even if below1m or inaccurate; genuine free-flight pitch samples; initial drop, repeated contact, physical terminal and first4 have zero new cost",
+        "validation_limit": "Config/reward-bound checks only; user-started training and one new fixed128 evaluation required; simulation gates do not establish hardware readiness"
+      }
+    },
+    "settled_evaluation": {
+      "warmup_landings": 4,
+      "minimum_later_landings_per_episode": 4,
+      "strict_landing_rate_min": 0.95,
+      "foot_error_p95_m_max": 0.05,
+      "mean_pitch_span_deg_max": 3.0,
+      "pitch_span_gt10_rate_max": 0.05,
+      "mean_pitch_rate_rms_rad_s_max": 0.2,
+      "physical_deaths_max": 0,
+      "scope": "jump5+ across all128 first15s episodes; every episode must provide>=4 later landings; deaths count across entire episode; first4 strict gate retained as legacy diagnostic only"
+    },
+    "response_robustness": {
+      "version": "roll_pitch_effectiveness_uncertainty_v1",
+      "nominal_fraction": 0.5,
+      "roll_pitch_gain_range": [
+        0.5,
+        1.0
+      ],
+      "training": "At each episode reset,50% keep original DR; other50% multiply roll/pitch motor torque response by one shared episode-persistent gain sampled uniformly0.5..1.0, via existing dr_inertia_multi division. Yaw response,thrust,motor lag/delay and all nominal physical parameters are retained.",
+      "evaluation": "One seed7001/128-case evaluation only: fixed cases0..63 original response,64..127 cover weaker-response gain midpoints. Saved release/base DR restored; gains/base multipliers saved explicitly. Both64-case strata must meet existing jump5+ precision/stability criteria. This is not the previous all-nominal128-case benchmark.",
+      "evidence": "20261112_153719 real trace, one frozen model/80ms free-flight windows: torque direction correlation roll0.917,pitch0.896; response amplitude ratio to nominal0.60/0.54 under nominal inertia. Hardware confirmed unchanged. Not a unique physical identification.",
+      "interpretation": "Engineering uncertainty envelope, not a claim that motor force/inertia is identified at half/double nominal. Do not transplant this gain into live deployment.",
+      "unchanged": "OBS73;four direct motors;LSTM/history/std;calibratedv2 nominal mass/inertia/spring/thrust;100Hz and motor timing;15s training episodes;1m goal and v17 reward coefficients;PPO",
+      "startup_source": "outputs/benchmark73_vertical/train_seed42_20261112_093938_178839Z/model_99.pt"
+    },
+    "flight_braking": {
+      "version": "state_only_free_flight_outward_and_preimpact_rate_v1",
+      "outward_rate_weight": 4.0,
+      "prelanding_rate_weight": 4.0,
+      "outward_start_tilt_deg": 3.0,
+      "outward_full_tilt_deg": 5.0,
+      "prelanding_clearance_m": 0.3,
+      "prelanding_rate_free_rad_s": 0.35,
+      "free_spring_q_max_m": 0.001,
+      "free_spring_qdot_max_m_s": 0.05,
+      "evidence": "v19 case75 bounded234tick trace: prior to hop1 touchdown wx/wy=-1.336/-1.272rad_s; hop2 late-descent roll14->25deg with near-zero motor outputs; impact roll rate jumps0.69->14.98rad_s. Coupled roll/pitch failure, not a proof of insufficient motor torque.",
+      "scope": "Post-drop CANDIDATE/FLIGHT; foot sphere above floor; spring<=1mm and abs(qdot)<=0.05m_s; alive. Outward cone-tilt rate ramp3->5deg; prelanding rate excess over0.35rad_s only while descending within final0.3m foot clearance. Initial drop/contact/physical terminals excluded.",
+      "rationale": "Reuse existing roll_pitch_rate_weight4 and flight_quality free rate0.35;3deg settled target/5deg original quality; final30cm gives about100ms before3m_s impact. Engineering choice, no sweep or convergence claim.",
+      "boundary": "No thrust or action penalty; no positive recovery bonus. Outward term is zero for decreasing cone tilt; prelanding rate term also encourages stopping rapid recovery before contact. Retain v19 work-cost relief and all height/precision rewards."
+    },
+    "near_upright_braking": {
+      "version": "near_upright_free_flight_roll_pitch_braking_v1",
+      "weight": 4.0,
+      "full_tilt_deg": 3.0,
+      "zero_tilt_deg": 6.0,
+      "free_rate_rad_s": 0.35,
+      "free_spring_q_max_m": 0.001,
+      "free_spring_qdot_max_m_s": 0.05,
+      "scope": "Post-drop CANDIDATE/FLIGHT, foot above floor, spring<=1mm and abs(qdot)<=0.05m/s, alive. Full cost at cone tilt<=3deg, linear taper to zero at6deg; yaw excluded.",
+      "reward": "-4*clip((6deg-cone_tilt)/3deg,0,1)*relu(norm(body_wxy)-0.35rad/s)^2*dt; includes both sides and exact upright; no positive payment or motor modification.",
+      "evidence": "v22 case94 one bounded344-tick replay: third hop pitch+0.80deg with body pitch rate-2.39rad/s at2.64s; delayed actual pitch torque reverses after the upright crossing; overshoot then low-output descent and tilted impact.",
+      "coefficient_basis": "Reuse v20 roll/pitch rate weight4 and free-flight quality/braking free rate0.35;3deg settled attitude target, taper out at twice that angle. Single engineering choice; no sweep.",
+      "boundary": "Extra cost is zero at tilt>=6deg and normal slow rates; initial drop, contact and physical-terminal samples excluded. Existing large-angle recovery relief and all height/precision/PPO/physics/DR/OBS73/direct-motor contracts retained.",
+      "validation_limit": "Reward wiring and zero-update startup only; improvement requires user-started training and one new fixed128 evaluation."
+    }
+  },
+  "training_iterations": 200,
+  "runner_config_source": "outputs/benchmark37_stage2c_energy2cm/train_seed42_20261023_153249_933187Z/runner_config.json",
+  "diagnosis_source": "outputs/benchmark73_vertical/eval_seed7001_20261112_124612_713308Z/case94_diagnostic/analysis.json",
+  "checkpoint_interval": 10,
+  "v23_notes": "Start from zero-death v20, not v21/v22. Only near_upright_braking added; no pitch_corridor, position plateau or span tail. Manual training only; no deployment update.",
+  "omni": {
+    "initial_checkpoint": "outputs/benchmark73_vertical/train_seed42_20261112_130123_868802Z/model_99.pt",
+    "moving_distance_range_m": [
+      0.12,
+      0.2
+    ],
+    "zero_probability": 0.1,
+    "workspace_radius_m": 0.6,
+    "route_points": 32,
+    "first_target": "releaseXY origin; first post-drop hop is stationary, next landing point already visible",
+    "advance": "Strict valid post-drop landing only; miss retains current and next targets for retry, no logical failure termination. Jump histories/LSTM retained across goal changes.",
+    "sampling": "Uniform radius0.12..0.20m and heading0..2pi,10% exact-zero holds; pre-generated32-point per-episode route, bounded0.6m workspace with max8 angular retries then inward fallback. Queued points never move.",
+    "evaluation_first_edge": "First moving edge is nonzero, balanced16 cases per each of8 heading sectors; later edges use training distribution. All128 first episodes including misses/deaths remain denominator.",
+    "strict_height_m": 1.0,
+    "strict_foot_m": 0.1,
+    "strict_tilt_deg": 15.0,
+    "promotion": {
+      "moving_first_attempt_strict_min": 0.9,
+      "per_direction_strict_min": 0.8,
+      "per_direction_samples_min": 8,
+      "episodes_with_three_moving_hits_min": 116,
+      "physical_deaths_max": 0
+    },
+    "transition": "Only short omnidirectional bridge. Later0.4m/0.6m and ring reintroduction require separate configurations and actual evaluation; no automatic distance escalation.",
+    "historical_reference": "Stage4a/4b pre-visible Pt/Pnext and strict-hit queue with retry;41D weights/obs scaling/oldmulti-seed/hash workflow not imported."
+  }
+}
