@@ -5,10 +5,11 @@ import fcntl
 import subprocess
 import time
 
-from .precision_continuous import HOME,stage
-from .precision_trials import read,save
+from .precision_continuous import AB_COURSE, HOME as AB_HOME, stage
+from .precision_trials import SERIES,read,save
 
 
+HOME=SERIES/'continuous_v51'
 FOCUSED=HOME/'ab_pairs/20261120_062100_541146Z'
 
 
@@ -42,7 +43,7 @@ def run_trial(folder):
     groups=read(folder/'development/summary.json')['precision10']['groups']
     long_run=read(folder/'continuous60/summary.json')['continuous']
     result=dict(groups=groups,continuous=long_run)
-    if settings['omni'].get('ab_full_pair_focus'):
+    if settings['omni'].get('ab_full_pair_focus') and not settings['omni'].get('ab_pair_only'):
         from .ab_preview_audit import paired_preview
         reference=HOME/'ab_pairs/20261120_042037_595771Z'
         cached='ascent_forecast_bias_m' in settings['precision_pre_reversal_release']
@@ -82,14 +83,17 @@ def service_trial(folder):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--historical-mixed',action='store_true',help='Reproduce the mixed V51 comparison')
     parser.add_argument('--full-pairs',action='store_true',help='Increase full straight and reverse pairs to 25 percent each')
     parser.add_argument('--ascent-shortfall',action='store_true',help='Full-pair sampling with gated pre-reversal shortfall feedback')
     args=parser.parse_args()
-    folder=HOME/'ab_pairs'/datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%fZ')
+    home = HOME if args.historical_mixed else AB_HOME
+    settings = course(args.full_pairs,args.ascent_shortfall) if args.historical_mixed else read(AB_COURSE)
+    folder=home/'ab_pairs'/datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%fZ')
     folder.mkdir(parents=True)
-    save(folder/'course.json',course(args.full_pairs,args.ascent_shortfall))
+    save(folder/'course.json', settings)
     print(f'AB 已登记，训练和验收目录 {folder}',flush=True)
-    with (HOME/'worker.lock').open('a') as lock:
+    with (home/'worker.lock').open('a') as lock:
         waiting=False
         while not ((folder/'result.json').exists() or (folder/'error.json').exists()):
             try:

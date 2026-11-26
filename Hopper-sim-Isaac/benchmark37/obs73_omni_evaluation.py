@@ -231,7 +231,13 @@ class OmniEvaluation(RingEvaluation):
             payload.update(version=step_hold['version'],step_hold_evaluation=step_hold,
                 route_scope=step_hold['route_scope'])
         for case,points in zip(payload['cases'],self.env.omni_route.points.cpu().tolist()):
-            case['omni_route_local_m']=points
+            if getattr(self.env,'waypoint_source',None) is None:
+                case['omni_route_local_m']=points
+            else:
+                case['initial_target_pair_local_m']=points[:2]
+        if getattr(self.env,'waypoint_source',None) is not None:
+            payload.update(version='online_waypoints',omni_distance_range_m=[0.,.5],workspace_radius_m=None,
+                           route_scope='Online preview after each navigation advance. Touchdown targets are in episodes.json.')
         queued=getattr(self.env,'cardinal_queue_evaluation_spec',None)
         precision=self.env.course['omni'].get('precision_eval_seed')
         if precision is not None:
@@ -388,6 +394,8 @@ class OmniEvaluation(RingEvaluation):
             ep.events[-1].update(target_index=index,target_local_xy_m=target.cpu().tolist(),
                 commanded_edge_m=length,moving=moving,direction=DIRECTIONS[direction] if moving else None,
                 attempt_for_target=attempt,first_attempt_for_target=attempt==1)
+            if getattr(route, 'waypoint_source', None) is not None:
+                ep.events[-1]['preview_local_xy_m'] = route.points[i,index+1].tolist()
 
     def finish(self):
         start=len(self.rows);super().finish()

@@ -83,11 +83,48 @@ def wrap_env(base):
     class CrossingQuaternionEnv(adapted):
         def __init__(self,*args,**kwargs):
             super().__init__(*args,**kwargs)
+            self.yaw_thrust_reserve = self.course.get('yaw_thrust_reserve_n')
+            self.yaw_feedback_priority = self.course.get('yaw_feedback_priority')
+            self.yaw_heading_servo = self.course.get('yaw_heading_servo')
+            if self.yaw_thrust_reserve is not None:
+                from .yaw_thrust_feedback import validate_thrust_reserve
+                validate_thrust_reserve(self.yaw_thrust_reserve)
+                self.yaw_thrust_heading = self.course['moving_yaw_prediction']['target_heading_rad']
+            if self.yaw_feedback_priority is not None:
+                priority = self.yaw_feedback_priority
+                if (self.yaw_thrust_reserve is None
+                        or not 0 < priority['warning_deg'] < priority['full_deg'] <= 180
+                        or not math.isfinite(priority['horizon_s']) or priority['horizon_s'] <= 0):
+                    raise ValueError('Invalid projected yaw priority configuration')
+            if self.yaw_heading_servo is not None:
+                from .yaw_heading_servo import validate_heading_servo
+                if self.yaw_thrust_reserve is None or self.yaw_feedback_priority is not None:
+                    raise ValueError('Independent heading servo requires a reserve and replaces yaw priority')
+                validate_heading_servo(self.yaw_heading_servo, self.yaw_thrust_reserve)
             self.t_frame_position_w=torch.zeros(self.num_envs,3,device=self.device)
             self.t_frame_quaternion_w=torch.zeros(self.num_envs,4,device=self.device)
             self.t_frame_quaternion_w[:,0]=1
             self._t_frame_rng=torch.Generator(device=self.device).manual_seed(int(self.cfg.seed)+421073)
             self._reset_t_frame_command(self._robot._ALL_INDICES)
+
+        def _pre_physics_step(self, actions):
+            if self.yaw_thrust_reserve is not None:
+                if self._crossing_snapshot is None:
+                    self._get_observations()
+                # Reuse the same measured quaternion and rates used by the actor.
+                # The parent records downstream motor commands; PPO keeps its own sampled actions.
+                sample = self._crossing_snapshot
+                if self.yaw_heading_servo is not None:
+                    from .yaw_heading_servo import allocate_heading_servo
+                    actions = allocate_heading_servo(sample[:, 6:10], sample[:, 3:6], actions,
+                                                     self.yaw_thrust_heading, self.yaw_thrust_reserve,
+                                                     self.yaw_heading_servo)
+                else:
+                    from .yaw_thrust_feedback import allocate_yaw_thrust
+                    actions = allocate_yaw_thrust(sample[:, 6:10], sample[:, 3:6], actions,
+                                                  self.yaw_thrust_heading, reserve_n=self.yaw_thrust_reserve,
+                                                  priority=self.yaw_feedback_priority)
+            super()._pre_physics_step(actions)
 
         def set_t_frame_command(self,ids,center_world,quaternion_world_t,offset_A_t,
                                quaternion_t_body,velocity_t,omega_t,state=.5):

@@ -62,6 +62,15 @@ def main():
         course_path=Path(sys.argv[index+1]).resolve(strict=True)
         del sys.argv[index:index+2]
     course=json.loads(course_path.read_text())
+    if course['omni'].get('ab_pair_only'):
+        from .checks.ab_only_check import check_routes
+        print('AB_ROUTE_CHECK='+json.dumps(check_routes(course)),flush=True)
+        if '--offline' in sys.argv:
+            return
+        from . import ring_runner
+        sys.argv[1:1] = ['ab-check', '--ring-config', str(course_path),
+                         '--initialize-from', str(ROOT/course['omni']['initial_checkpoint'])]
+        return ring_runner.main()
     if '--offline' in sys.argv and course['omni'].get('training_adjacent_hops'):
         from .checks.adjacent_hops_check import check
         print('ADJACENT_HOPS_CHECK='+json.dumps(check(course)),flush=True)

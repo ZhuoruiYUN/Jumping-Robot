@@ -142,6 +142,36 @@ def distribution(values):
                 p99=float(np.quantile(x, .99)), maximum=float(x.max()))
 
 
+def same_target_recovery_metrics(rows, radius):
+    """Outcomes of the very next jump after a retained moving waypoint."""
+    starts = landings = hits = deaths = 0
+    release_errors = []
+    for row in rows:
+        events = row['events']
+        for i, event in enumerate(events):
+            if not event['moving'] or event['navigation_advanced']:
+                continue
+            starts += 1
+            if i + 1 < len(events):
+                following = events[i + 1]
+                if following['target_index'] != event['target_index']:
+                    raise ValueError('Expected a retained waypoint after a navigation miss')
+                landings += 1
+                hits += int(following['foot_error_m'] <= radius)
+                release = following
+            else:
+                deaths += int(row['physical_death'])
+                terminal = row.get('terminal_flight', {})
+                if not (terminal.get('confirmed_release') and terminal['target_index'] == event['target_index']):
+                    continue
+                release = terminal
+            if 'release_velocity_xy_m_s' in release and 'desired_release_velocity_xy_m_s' in release:
+                release_errors.append(math.dist(release['release_velocity_xy_m_s'], release['desired_release_velocity_xy_m_s']))
+    return dict(starts=starts, next_landings=landings, within_radius=hits,
+                within_radius_rate=hits/landings if landings else None, physical_failures=deaths,
+                unfinished_at_timeout=starts-landings-deaths, release_xy_error_m_s=distribution(release_errors))
+
+
 def summarize(rows):
     if not rows:
         raise ValueError("No completed quota episodes; cannot report success")

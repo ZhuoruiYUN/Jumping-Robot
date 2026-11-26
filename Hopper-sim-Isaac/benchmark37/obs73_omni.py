@@ -61,6 +61,7 @@ def straight_eval_spec(course,spacing,jumps):
 class GroundRoute:
     def __init__(self,n,device,config,seed,evaluation=False,training_mixture=None):
         self.config=config;self.evaluation=evaluation
+        self.waypoint_source = None
         low,high=config['moving_distance_range_m']
         self.curriculum=config.get('distance_curriculum')
         ceiling=.8 if self.curriculum else .2
@@ -177,6 +178,10 @@ class GroundRoute:
         if self.adjacent_metrics is not None:
             self.adjacent_metrics.reset(ids)
         self.index[ids]=0;self.points[ids,0]=0.
+        if self.waypoint_source is not None:
+            self.points[ids] = 0.
+            self._fill_preview(ids, self.index[ids])
+            return
         if self.evaluation and 'precision_eval_seed' in c:
             from .precision_routes import routes
             if not hasattr(self,'precision_bank'):
@@ -382,16 +387,30 @@ class GroundRoute:
         i=self.index[ids]
         return self.points[ids,i],self.points[ids,i+1]
 
+    def _fill_preview(self, ids, index):
+        from .waypoint_stream import next_preview
+        current = self.points[ids, index].tolist()
+        previews = [next_preview(self.waypoint_source, lane, i+1, xy)
+                    for lane, i, xy in zip(ids.tolist(), index.tolist(), current)]
+        if previews:
+            self.points[ids, index+1] = self.points.new_tensor(previews)
+
     def advance(self,valid,strict,navigation=None):
-        self.misses+=(valid & ~strict).sum()
         advance=valid&strict if navigation is None else valid&(strict|navigation)
-        self.strict_advances+=(valid&strict).sum()
-        self.advances_without_strict+=(advance&~strict).sum()
         ids=advance.nonzero(as_tuple=False).flatten()
         if len(ids):
-            if (self.index[ids]+2>=self.points.shape[1]).any():
-                raise RuntimeError('Omni route exhausted; do not silently reuse targets')
-            self.index[ids]+=1;self.advances+=len(ids)
+            new_index = self.index[ids]+1
+            if (new_index+1>=self.points.shape[1]).any():
+                if self.waypoint_source is None:
+                    raise RuntimeError('Omni route exhausted; do not silently reuse targets')
+                self.points = torch.cat((self.points, torch.zeros_like(self.points)), dim=1)
+            if self.waypoint_source is not None:
+                self._fill_preview(ids, new_index)
+            self.index[ids] = new_index
+            self.advances += len(ids)
+        self.misses+=(valid & ~strict).sum()
+        self.strict_advances+=(valid&strict).sum()
+        self.advances_without_strict+=(advance&~strict).sum()
         return ids
 
 
@@ -417,14 +436,27 @@ def env_class(evaluation=False):
     from .two_ground_targets import _set_active_goal
 
     class OmniEnv(vertical_class(evaluation=evaluation)):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.ab_failure_settlement = None
+            config = self.course.get('ab_failure_settlement')
+            if config is not None and not evaluation:
+                if not self.course['omni'].get('ab_pair_only'):
+                    raise ValueError('AB failure settlement requires the all-AB training course')
+                from .ab_failure_settlement import ABFailureSettlement
+                self.ab_failure_settlement = ABFailureSettlement(config, self.step_dt, self.device)
+                self._episode_sums['ab_failure_settlement'] = torch.zeros(self.num_envs, device=self.device)
+
         def _reset_task_targets(self,ids):
             if not hasattr(self,'omni_route'):
                 self.omni_route=GroundRoute(self.num_envs,self.device,self.course['omni'],self.cfg.seed,evaluation,
                     training_mixture=self.course.get('moving_training_sequences'))
             # New episodes sample at the current range; already queued points
             # remain fixed while the global PPO-update curriculum advances.
+            self.omni_route.waypoint_source = getattr(self, 'waypoint_source', None)
             self.omni_route.reset(ids,getattr(self,'common_step_counter',0))
-            if self.course.get('guarded_keys') and (not evaluation or getattr(self,'guarded_diagnostic',False)):
+            train_keys = not evaluation and not self.course['omni'].get('ab_pair_only')
+            if self.course.get('guarded_keys') and (train_keys or getattr(self,'guarded_diagnostic',False)):
                 from .guarded_keys import GuardedKeys
                 if not hasattr(self,'key_guard'):
                     opt=self.course['guarded_keys']
@@ -447,6 +479,20 @@ def env_class(evaluation=False):
             self._two_ground_route_index[ids]=self.omni_route.index[ids]
             _set_active_goal(self,ids)
 
+        def set_next_waypoints(self, ids, points_xy):
+            """Replace previews on online evaluation lanes before building the next observation."""
+            route = self.omni_route
+            if getattr(route, 'waypoint_source', None) is None:
+                raise ValueError('Online evaluation is required to replace a preview')
+            points = torch.as_tensor(points_xy, device=route.points.device, dtype=route.points.dtype)
+            index = route.index[ids]
+            current = route.points[ids, index]
+            if (points.shape != current.shape or not torch.isfinite(points).all()
+                    or ((points-current).norm(dim=-1) > .500001).any()):
+                raise ValueError('Expected one finite XY per lane within 0.5 m of its current waypoint')
+            route.points[ids, index+1] = points
+            self._two_ground_pt1_xy_w[ids] = self._terrain.env_origins[ids, :2] + points
+
         def _get_rewards(self):
             d=self._robot.data;f=self._foot_event;q=d.root_quat_w
             physical=(d.root_link_pos_w[:,2]<.05)|(q[:,1:3].square().sum(-1)>.5)
@@ -458,11 +504,52 @@ def env_class(evaluation=False):
             tilt=torch.rad2deg(torch.acos((1-2*q[:,1:3].square().sum(-1)).clamp(-1,1)))
             strict=valid&(peak>=1.)&(error<=self.landing_radius_m)&(tilt<=15.)
             ab=getattr(self.omni_route,'ab_pairs',None)
+            recovery = ab.recovery if ab is not None else None
             if ab is not None:
+                opening = self.omni_route.index < ab.a_index
                 ab_done=ab.touchdown(self.omni_route.index,valid,strict)
+                if ab.paired_axes is not None:
+                    ab.paired_axes.record_arrival(self.omni_route, valid, error <= self.landing_radius_m)
+                if hasattr(self, 'ab_spawn'):
+                    self.ab_spawn.record_touchdowns(valid & ~ab_done & ~opening, ab_done, strict)
+                    self.extras.setdefault('log', {}).update(self.ab_spawn.metrics())
             stationary=getattr(self.omni_route,'stationary_mask',torch.zeros_like(valid))
             advance=navigation_advance(valid,strict,error,tilt,self.omni_route.index,
                 stationary,self.course.get('moving_navigation'),self.landing_radius_m)
+            if recovery is not None:
+                recovery.record_landing(ab_done, error <= self.landing_radius_m, physical)
+                missed_a = valid & ~ab_done & ~advance & ~opening
+                prefer_retry = None
+                if self.course.get('retry_compression') is not None:
+                    from .retry_compression import projected_release_at_contact
+                    cfg = self.course['retry_compression']
+                    foot = d.body_link_pos_w[:, self._foot_body_id]
+                    velocity = d.root_link_lin_vel_w
+                    # Use the same post-touch flight EMA as the reference latched
+                    # after the queue update, but preview the retain branch only.
+                    ema = self.rebound_config['duration_ema']
+                    flight = (1.-ema)*self.rebound_plan.flight + ema*(f.air_steps*self.step_dt).clamp(.6,1.2)
+                    target = (self._two_ground_pt_xy_w-foot[:, :2])/flight[:, None]
+                    limit = self.landing_guidance_config['speed_limit_m_s']
+                    target *= (limit/target.norm(dim=-1,keepdim=True).clamp_min(1.e-6)).clamp(max=1.)
+                    predicted = projected_release_at_contact(
+                        d.root_link_pos_w-foot, q, d.root_ang_vel_b, velocity,
+                        cfg['sweep_horizon_s'], cfg['vertical_impulse_ratio'])
+                    threshold = cfg['threshold_m_s']
+                    # Only moving A misses inside the small-angle impact model.
+                    ids = torch.arange(self.num_envs, device=self.device)
+                    edge = self.omni_route.points[ids,self.omni_route.index] - self.omni_route.points[
+                        ids,(self.omni_route.index-1).clamp_min(0)]
+                    prefer_retry = ((edge.norm(dim=-1) > 1.e-6) & (tilt <= 15.) & (velocity[:, 2] < 0)
+                                    & ((velocity[:, :2]-target).norm(dim=-1) <= threshold)
+                                    & ((predicted-target).norm(dim=-1) > threshold))
+                    self._compression_promoted = missed_a & prefer_retry & (recovery.assignment == recovery.CONTINUE)
+                start_hold = recovery.start(missed_a, prefer_retry)
+                # A rehearsal hold advances on a strict landing. After A,
+                # ordinary AB advances and the recovery branches retain A.
+                advance = valid & (((recovery.active == recovery.CONTINUE) & ~opening) | advance)
+            elif ab is not None and ab.all_lanes:
+                advance = valid & (~opening | advance)
             # Parent reward and outer OBS73 event histories use the old goal.
             guard=getattr(self,'key_guard',None)
             metrics = self.omni_route.adjacent_metrics
@@ -484,6 +571,8 @@ def env_class(evaluation=False):
             reward=super()._get_rewards()
             if guard is None:
                 ids=self.omni_route.advance(valid,strict,advance)
+                if ab is not None and ab.paired_axes is not None:
+                    ab.paired_axes.publish_departure(self.omni_route, ids, ab_done | self.reset_buf)
             else:
                 ids=self.omni_route.advance(valid & ~guard.mask,strict,advance)
                 # Keep the old current as the preceding edge at touchdown;
@@ -499,13 +588,28 @@ def env_class(evaluation=False):
             if ab is not None:
                 # DirectRLEnv resets after _get_rewards. Keep the full B
                 # touchdown reward and mark the curriculum cut as a timeout.
+                if self.ab_failure_settlement is not None:
+                    failed = self.reset_terminated & physical
+                    charge = self.ab_failure_settlement.charge(self.episode_length_buf, failed)
+                    reward = reward + charge
+                    self._episode_sums['ab_failure_settlement'] += charge
+                    # A fall coinciding with the time limit is a true terminal for PPO.
+                    self.reset_time_outs &= ~failed
                 self.reset_time_outs |= ab_done & ~self.reset_terminated
                 self.reset_buf |= ab_done
                 self.extras.setdefault('log',{}).update(ab.metrics())
+                if ab.paired_axes is not None:
+                    self.extras['log'].update(ab.paired_axes.metrics())
             self._omni_last_navigation_advance=advance
+            advanced_count = len(ids) if guard is None else advance.sum()
+            if recovery is not None:
+                hold_ids = start_hold.nonzero().flatten()
+                foot_local = d.body_link_pos_w[:,self._foot_body_id,:2] - self._terrain.env_origins[:,:2]
+                recovery.publish_hold(self.omni_route, hold_ids, foot_local)
+                ids = torch.cat((ids, hold_ids))
             if len(ids):
                 self._bind_targets(ids)
-                self._two_ground_total_advances+=len(ids) if guard is None else advance.sum()
+                self._two_ground_total_advances+=advanced_count
             if guard is not None:
                 self.extras.setdefault('log',{}).update({
                     'Keyboard/paused_lane_fraction':(guard.state[guard.mask]==3).float().mean(),

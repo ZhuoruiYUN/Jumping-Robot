@@ -1,0 +1,1058 @@
+{
+  "envelope": {
+    "version": "full_assembly_disk_prisms_swept_v2",
+    "bounds_q0_min_m": [
+      -0.18130000000000002,
+      -0.18130000000000002,
+      -0.28500001
+    ],
+    "bounds_all_q_max_m": [
+      0.18130000000000002,
+      0.18130000000000002,
+      0.008
+    ],
+    "dimensions_q0_m": [
+      0.36260000000000003,
+      0.36260000000000003,
+      0.29300001000000003
+    ],
+    "dimensions_q087_m": [
+      0.36260000000000003,
+      0.36260000000000003,
+      0.20600001000000004
+    ],
+    "sphere_center_body_m": [
+      0.0,
+      0.0,
+      -0.138500005
+    ],
+    "D_env_m": 0.5905984472211218,
+    "sphere_construction": "half diagonal of union AABB over q=0..0.087m",
+    "D0_m": 0.67918821430429,
+    "rotor_radius_m": 0.1,
+    "rotor_half_height_m": 0.008,
+    "rotor_source": "provisional engineering allowance; measured blade sweep unavailable",
+    "asset_audit": "composed HopperCalibrated20261028.usda: body/arms/motors/base/leg/rod/foot collision present; rotor sweep absent",
+    "delta_m": 0.002,
+    "delta_source": "simulation numerical engineering margin only; not a hardware error budget",
+    "rotor_enclosure": "32-sided circumscribed disk prism, same100mm engineering radius and8mm half-height"
+  },
+  "center_local_m": [
+    0.27,
+    0.0,
+    0.85
+  ],
+  "normal_world": [
+    1.0,
+    0.0,
+    0.0
+  ],
+  "inner_radius_m": 0.339594107152145,
+  "axial_thickness_m": 0.02,
+  "tube_radial_width_m": 0.025,
+  "delta_m": 0.002,
+  "observation_version": "direct_motor_crossing_quaternion73_history40_20_v1",
+  "episode_s": 60.0,
+  "task": "obs73_omni_ground_targets_v1",
+  "version": "obs73_ab_v84_transverse_rebound",
+  "status": "candidate_requires_manual_training_and_all_evaluations",
+  "landing_xy_m": [
+    0.0,
+    0.0
+  ],
+  "next_edge_xy_m": [
+    0.0,
+    0.0
+  ],
+  "completion_reward": 0.0,
+  "sequence": [
+    "release_drop",
+    "stationary_first_strict_hop",
+    "moving_navigation_on_position_tilt_with_independent_strict_height_scoring"
+  ],
+  "initialization": "Initialize actor, critic and OBS73 normalizers from V74 formal model_49 with a fresh optimizer.",
+  "termination": "Moving training60s,stationary training15s; original evaluation scopes15s and explicit cardinal queue evaluation60s. Physical terminal and goal navigation rules unchanged.",
+  "reward": "V74 height and pre-apex guidance, with stationary full-cone roll/pitch anticipation, a per-hop stationary tilt peak cost, and the measured-foot descent and retry release guides.",
+  "evaluation": "Strict touchdown within 0.05 m of the scored target, height >=1 m and tilt <=15 degrees. Retain yaw and reliability gates. Report whole-flight hold and travel-plane attitude separately.",
+  "stationary_pretraining": {
+    "version": "vertical_base_no_extra_pitch_cost_v1",
+    "apex_target_m": 1.0,
+    "pitch_weight": 0.0,
+    "pitch_rate_weight": 0.0,
+    "pitch_work_weight": 0.0,
+    "free_spring_q_max_m": 0.0001,
+    "free_spring_qdot_max_m_s": 0.05,
+    "ring_context_height_range_m": [
+      0.8,
+      1.2
+    ]
+  },
+  "vertical_pretraining": {
+    "version": "fixed1m_no_low_height_curriculum_v1",
+    "steps_per_update": 256,
+    "window_updates": 4,
+    "minimum_valid_landings": 64,
+    "promotion_target_landing_rate": 0.8,
+    "training_height_tolerance_m": 0.0,
+    "levels": [
+      {
+        "name": "fixed1m",
+        "release_height_m": [
+          0.8,
+          1.2
+        ],
+        "target_apex_m": 1.0,
+        "tilt_limit_deg": 5.0,
+        "upright_fraction": 0.2
+      }
+    ],
+    "landing_reward": {
+      "scale": 6.0,
+      "apex_width_m": 0.15,
+      "foot_width_m": 0.05,
+      "tilt_width_deg": 15.0
+    },
+    "promotion": "single fixed1m target throughout training; no0.6m/0.8m levels or promotion gate",
+    "boundary": "new level applies only on episode reset; existing target and release stay fixed within each episode",
+    "unchanged": "73D interface,4direct motors,calibratedv2 physics/DR,delay/lag,LSTM,PPO,15s; no control assists",
+    "jump_cycle_reward": {
+      "version": "event_xy_goal_with_reference_flight_v1",
+      "gamma": 0.99,
+      "energy_margin_m": 0.04,
+      "height_quality": "1.02m Gaussian/squared-rise quality remains only in event XY/goal shaping; flight height/apex use native dense kernels",
+      "events": "XY/goal only at complete touchdown; reference_flight_reward overrides energy/height/apex and positive foot payment",
+      "energy": "overridden by reference_flight_reward: native positive continuous energy feedback at1.04m",
+      "apex_margin_m": 0.02,
+      "strict_goal_bonus": true,
+      "completion": "goal/landing completion bonus requires apex>=1m, foot error<=5cm and tilt<=15deg; graded XY/apex shaping remains available below1m"
+    },
+    "max_updates_without_valid_landing": 128,
+    "attitude_refinement": {
+      "version": "post_drop_tilt_and_roll_pitch_rate_v1",
+      "tilt_weight": 80.0,
+      "roll_pitch_rate_weight": 4.0,
+      "scope": "after initial contact, including ground preparation/ascent/apex/descent; physical terminals excluded",
+      "units": "tilt radians squared, body wx/wy radians-per-second squared; both multiplied by control dt",
+      "rationale": "case115 oscillates in free ascent while touchdown attitude is small; baseline angle/rate penalties underweight whole-flight motion",
+      "evaluation_targets": {
+        "mean_pitch_span_deg_max": 5.0,
+        "pitch_span_gt10_rate_max": 0.05
+      }
+    },
+    "leg_swing_penalty": {
+      "version": "free_flight_foot_relative_xy_speed_v1",
+      "weight": 120.0,
+      "free_spring_q_max_m": 0.001,
+      "signal": "actual SpringLeg link-origin velocity minus root-link-origin velocity, world XY, m/s",
+      "scope": "post-drop CANDIDATE or FLIGHT; q<=1mm; alive; no motor/action/observation changes",
+      "purpose": "suppress leg-tip whipping from roll/pitch rotation while excluding common horizontal translation and vertical spring speed",
+      "reward": "-120*sum((v_foot_xy-v_root_xy)^2)*dt; nonpositive, with squared speed scaling"
+    },
+    "yaw_refinement": {
+      "version": "post_drop_stationary_heading_hold_v1",
+      "heading_weight": 40.0,
+      "rate_weight": 2.0,
+      "target_heading_rad": 0.0,
+      "scope": "after first contact, entire cycle; alive; same zero heading as current release and native yaw reward",
+      "error": "atan2(sin(yaw-target),cos(yaw-target)), quaternion wxyz, heading in world frame",
+      "rate": "body angular velocity z, rad/s",
+      "reward": "-(40*heading_error_rad^2+2*omega_body_z^2)*dt; additive to native yaw/angular penalties",
+      "observation": "existing quaternion/body angular velocity already supply both signals; OBS73 unchanged",
+      "metrics": "post-drop heading-error RMS, yaw-rate RMS and per-episode peak heading; strict1m criterion unchanged"
+    },
+    "reference_flight_reward": {
+      "version": "stage4l_flight_and_landing_kernels_event_xy_v1",
+      "energy_margin_m": 0.06,
+      "height_width_m": 0.4,
+      "apex_height_width_m": 0.18,
+      "apex_speed_width_m_s": 0.35,
+      "apex_deficit_scale": 50.0,
+      "reference_stationary_run": "outputs/benchmark37_stage2e_pretouch/train_seed42_20261026_032020_799352Z",
+      "reference_calibrated_run": "outputs/benchmark37_stage4l_landing_gain/train_seed42_20261102_034630_836993Z",
+      "continuous": "Dense energy,height,apex reward centres1.06m; original scales,widths anddt; observation command and strict touchdown threshold remain1m.",
+      "landing": "6*exp(-0.5*(e_foot/0.05m)^2), once, gated at1m/5cm/15deg; no first-two multiplier for this stationary task",
+      "underheight": "-50*relu(1m-final_peak), once at valid touchdown, independent of foot error/tilt; initial drop excluded",
+      "intentional_difference": "XY/goal remain once at touchdown (existing cycle quality), to avoid paying for stationary hovering;73D/v2 physics and existing stabilizers retained",
+      "evidence_limit": "Historical stable37D stationary results are design references, not a performance guarantee for73D under calibratedv2 physics",
+      "height_reward_margin_m": 0.06,
+      "margin_rationale": "v1 formal128: first-moving20 misses=18 underheight+2 foot; all-moving-first261 misses=199 height-only+16 height/foot+46 foot. Change reward target margin4cm->6cm only; no claim to fix weak-response deaths.",
+      "margin_validation": "CPU kernel and configuration checks; behavior improvement requires user-started100 updates and one saved-case128 evaluation.",
+      "surplus_height_scale": {
+        "start_above_target_m": 0.06,
+        "full_above_target_m": 0.11,
+        "scale": 0.7
+      }
+    },
+    "rotation_work_penalty": {
+      "version": "free_flight_positive_roll_pitch_motor_work_v1",
+      "weight": 500.0,
+      "free_spring_q_max_m": 0.001,
+      "signal": "sum over body x,y of max(actual delayed/lagged applied motor torque_i * body omega_i,0), watts",
+      "scope": "post-drop CANDIDATE/FLIGHT, spring q<=1mm, alive; contact/drop excluded",
+      "reward": "-500*sum(relu(tau_i*omega_i)*retained_factor_i)*dt, i=roll,pitch; legacy factor1 below10deg, during outward motion or non-restoring torque. For net tilt-decreasing recovery, factor ramps1->0.25 from10->20deg; braking remains zero cost; never positive.",
+      "coefficient_source": "existing ring targeted pitch_work_weight=500; extend identically to roll, no sweep",
+      "evidence": "v9 case62 bounded15s replay:15 completed hops,5 pitch spans>10deg,max16.31deg; worst hop pitch rate1.886rad/s,positive pitch work0.002594J (new cost1.297); no claim of exact fixed128 replay",
+      "unchanged": "v8 height/energy/apex/foot/leg/tilt/yaw costs,1m/10cm/15deg scoring,OBS73,4motor actions,calibratedv2 physics/DR,15s,LSTM/PPO",
+      "training_source": "outputs/benchmark73_vertical/train_v8_seed42_20261110_144540Z/model_99.pt",
+      "validation_limit": "Reward wiring/startup only until manual PPO training and one fixed128 evaluation; improvement not yet established",
+      "upright_recovery": {
+        "start_tilt_deg": 10.0,
+        "full_tilt_deg": 20.0,
+        "relief_fraction": 0.75
+      }
+    },
+    "flight_quality": {
+      "version": "stationary_whole_flight_precision_quality_v1",
+      "span_free_deg": 5.0,
+      "span_width_deg": 5.0,
+      "rate_free_rad_s": 0.35,
+      "rate_width_rad_s": 0.35,
+      "quality": "exp(-0.5*(relu((max(roll_span,pitch_span)-5deg)/5deg)^2+relu((rms_body_wxy-0.35rad_s)/0.35rad_s)^2))",
+      "scope": "CANDIDATE/FLIGHT q<=2mm and abs(spring_qdot)<=0.05m/s; initial drop and impact/compression transients excluded; existing stationary free-spring-rate criterion",
+      "payment": "Once valid touchdown: subtract (1-quality)*(positive event XY+goal+foot); no extra dt factor; strict scorer unchanged",
+      "rationale": "v10 case59 bounded replay hop2 pitch_span20.86deg still strict with touchdown tilt4.20deg/foot4.02cm; final pose alone misses air oscillation",
+      "threshold_basis": "5deg matches existing mean-pitch-span target;0.35rad/s permits normal v10 rates near0.29rad/s with roll allowance while downweighting0.8rad/s whipping; no sweep",
+      "unchanged": "v10 height/energy/apex/K50,all existing costs,PPO,OBS73,4direct motors,calibratedv2 physics/DR,15s; no CTBR/LQR/controller",
+      "training_source": "outputs/benchmark73_vertical/train_v10_seed42_20261111_051707Z/model_99.pt",
+      "validation_limit": "Reward behavior/startup only; needs user-started training and one new checkpoint evaluation; no stability claim",
+      "free_spring_qdot_max_m_s": 0.05,
+      "settled_pitch_refinement": {
+        "warmup_landings": 4,
+        "span_free_deg": 3.0,
+        "span_width_deg": 3.0,
+        "rate_free_rad_s": 0.2,
+        "rate_width_rad_s": 0.2,
+        "reward": "jump5+: retain Q_v12 and all original precision payments; add -4*(1-exp(-0.5*((relu(pitch_span-3deg)/3deg)^2+(relu(pitch_rate_RMS-0.2)/0.2)^2))) once valid landing; no dt factor",
+        "scope": "same genuine free-spring flight samples as v12; q<=2mm and abs(qdot)<=0.05m/s, initial drop/contact impulses excluded",
+        "rationale": "v15 recovered later strict93.05%,foot P95=4.77cm and0deaths, but pitch4.29deg/0.230rad_s misses3deg/0.2 targets; increase only independent cap2->4, warm-start v15; not a demonstrated improvement",
+        "unchanged": "first4/base Q_v12/height1.02m/energy1.04m/K50/foot5cm Gaussian/strict1m-10cm-15deg/all existing costs/PPO/OBS73/direct motors/physics/DR/15s retained; no v13 bonus",
+        "mode": "bounded_cost",
+        "cost_scale": 4.0,
+        "eligibility": "valid confirmed jump5+ even if below1m or inaccurate; genuine free-flight pitch samples; initial drop, repeated contact, physical terminal and first4 have zero new cost",
+        "validation_limit": "Config/reward-bound checks only; user-started training and one new fixed128 evaluation required; simulation gates do not establish hardware readiness"
+      }
+    },
+    "settled_evaluation": {
+      "warmup_landings": 4,
+      "minimum_later_landings_per_episode": 4,
+      "strict_landing_rate_min": 0.95,
+      "foot_error_p95_m_max": 0.05,
+      "mean_pitch_span_deg_max": 3.0,
+      "pitch_span_gt10_rate_max": 0.05,
+      "mean_pitch_rate_rms_rad_s_max": 0.2,
+      "physical_deaths_max": 0,
+      "scope": "jump5+ across all128 first15s episodes; every episode must provide>=4 later landings; deaths count across entire episode; first4 strict gate retained as legacy diagnostic only"
+    },
+    "response_robustness": {
+      "version": "roll_pitch_effectiveness_uncertainty_v1",
+      "nominal_fraction": 0.5,
+      "roll_pitch_gain_range": [
+        0.5,
+        1.0
+      ],
+      "training_roll_pitch_gain_range": [
+        0.9,
+        1.0
+      ],
+      "training": "Each episode samples an imu_link plant fit. Half retain the fitted roll/pitch response and half draw an additional shared gain of 0.9–1.0. The older 0.5–1.0 range is retained for the saved evaluation cases.",
+      "evaluation": "One seed7001/128-case evaluation only: fixed cases0..63 original response,64..127 cover weaker-response gain midpoints. Saved release/base DR restored; gains/base multipliers saved explicitly. Both64-case strata must meet existing jump5+ precision/stability criteria. This is not the previous all-nominal128-case benchmark.",
+      "evidence": "20261112_153719 real trace, one frozen model/80ms free-flight windows: torque direction correlation roll0.917,pitch0.896; response amplitude ratio to nominal0.60/0.54 under nominal inertia. Hardware confirmed unchanged. Not a unique physical identification.",
+      "interpretation": "The imu_link fits set the nominal actuator response. The training gain represents residual uncertainty around those fits.",
+      "unchanged": "OBS73, four direct motor actions, LSTM, 100 Hz policy rate, heading allocation, and 1 m scoring.",
+      "startup_source": "outputs/benchmark73_vertical/train_seed42_20261112_093938_178839Z/model_99.pt"
+    },
+    "flight_braking": {
+      "version": "state_only_free_flight_outward_and_preimpact_rate_v1",
+      "outward_rate_weight": 4.0,
+      "prelanding_rate_weight": 4.0,
+      "outward_start_tilt_deg": 3.0,
+      "outward_full_tilt_deg": 5.0,
+      "prelanding_clearance_m": 0.3,
+      "prelanding_rate_free_rad_s": 0.35,
+      "free_spring_q_max_m": 0.001,
+      "free_spring_qdot_max_m_s": 0.05,
+      "evidence": "v19 case75 bounded234tick trace: prior to hop1 touchdown wx/wy=-1.336/-1.272rad_s; hop2 late-descent roll14->25deg with near-zero motor outputs; impact roll rate jumps0.69->14.98rad_s. Coupled roll/pitch failure, not a proof of insufficient motor torque.",
+      "scope": "Post-drop CANDIDATE/FLIGHT; foot sphere above floor; spring<=1mm and abs(qdot)<=0.05m_s; alive. Outward cone-tilt rate ramp3->5deg; prelanding rate excess over0.35rad_s only while descending within final0.3m foot clearance. Initial drop/contact/physical terminals excluded.",
+      "rationale": "Reuse existing roll_pitch_rate_weight4 and flight_quality free rate0.35;3deg settled target/5deg original quality; final30cm gives about100ms before3m_s impact. Engineering choice, no sweep or convergence claim.",
+      "boundary": "No thrust or action penalty; no positive recovery bonus. Outward term is zero for decreasing cone tilt; prelanding rate term also encourages stopping rapid recovery before contact. Retain v19 work-cost relief and all height/precision rewards."
+    },
+    "near_upright_braking": {
+      "version": "near_upright_free_flight_roll_pitch_braking_v1",
+      "weight": 4.0,
+      "full_tilt_deg": 3.0,
+      "zero_tilt_deg": 6.0,
+      "free_rate_rad_s": 0.35,
+      "free_spring_q_max_m": 0.001,
+      "free_spring_qdot_max_m_s": 0.05,
+      "scope": "Post-drop CANDIDATE/FLIGHT, foot above floor, spring<=1mm and abs(qdot)<=0.05m/s, alive. Full cost at cone tilt<=3deg, linear taper to zero at6deg; yaw excluded.",
+      "reward": "-4*clip((6deg-cone_tilt)/3deg,0,1)*relu(norm(body_wxy)-0.35rad/s)^2*dt; includes both sides and exact upright; no positive payment or motor modification.",
+      "evidence": "v22 case94 one bounded344-tick replay: third hop pitch+0.80deg with body pitch rate-2.39rad/s at2.64s; delayed actual pitch torque reverses after the upright crossing; overshoot then low-output descent and tilted impact.",
+      "coefficient_basis": "Reuse v20 roll/pitch rate weight4 and free-flight quality/braking free rate0.35;3deg settled attitude target, taper out at twice that angle. Single engineering choice; no sweep.",
+      "boundary": "Extra cost is zero at tilt>=6deg and normal slow rates; initial drop, contact and physical-terminal samples excluded. Existing large-angle recovery relief and all height/precision/PPO/physics/DR/OBS73/direct-motor contracts retained.",
+      "validation_limit": "Reward wiring and zero-update startup only; improvement requires user-started training and one new fixed128 evaluation."
+    }
+  },
+  "training_iterations": 50,
+  "runner_config_source": "training_config_v51/ab/runner_config.json",
+  "diagnosis_source": "outputs/benchmark73_long_pairs_v48/four_axis.json",
+  "checkpoint_interval": 10,
+  "v23_notes": "Start from zero-death v20, not v21/v22. Only near_upright_braking added; no pitch_corridor, position plateau or span tail. Manual training only; no deployment update.",
+  "omni": {
+    "initial_checkpoint": "outputs/benchmark73_precision10_v50/ab_ws_first_precision_v82/train_seed42_20261125_094124_358318Z/model_249.pt",
+    "moving_distance_range_m": [
+      0.12,
+      0.5
+    ],
+    "zero_probability": 0.1,
+    "workspace_radius_m": 2.0,
+    "route_points": 96,
+    "first_target": "Training starts at A with B visible. Continuous qualification starts at the release origin.",
+    "advance": "Training advances on the first valid A touchdown and times out on the first valid B touchdown. Evaluation uses moving_navigation.",
+    "sampling": "Every training lane samples A and B with edges of 0 to 0.5 m. A C preview is visible on the B hop.",
+    "evaluation_first_edge": "First moving edge is nonzero, balanced16 cases per each of8 heading sectors. Evaluation uses the established unbiased distances, headings and saved128 cases.",
+    "strict_height_m": 1.0,
+    "strict_foot_m": 0.05,
+    "strict_tilt_deg": 15.0,
+    "promotion": {
+      "moving_first_attempt_strict_min": 0.95,
+      "per_direction_strict_min": 0.8,
+      "per_direction_samples_min": 8,
+      "episodes_with_three_moving_hits_min": 116,
+      "physical_deaths_max": 0,
+      "foot_error_p95_m_max": 0.05
+    },
+    "transition": "Horizontal range05 experiment only. Fresh final0.12..0.50m128 cases required;0.8m or short0.2m saved routes rejected. Both moving and saved-v23 stationary gates required for promotion.",
+    "historical_reference": "Stage4a/4b pre-visible Pt/Pnext and strict-hit queue with retry;41D weights/obs scaling/oldmulti-seed/hash workflow not imported.",
+    "distance_curriculum": {
+      "version": "linear_max_distance_v1",
+      "initial_max_m": 0.5,
+      "final_max_m": 0.5,
+      "ramp_updates": 1,
+      "steps_per_update": 256,
+      "boundary": "Keep v8 final0.5m horizontal ceiling throughout the reward ablation; no new range expansion. Queued targets fixed; apex command1m unchanged."
+    },
+    "case_version": "obs73_quaternion_omni_range05_response64_64_first128_v1",
+    "evaluation_distance_bin_edges_m": [
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5
+    ],
+    "landing_precision_goal_m": 0.05,
+    "training_reversals": {
+      "version": "omni_repeated_reversal_v1",
+      "direct_fraction": 0.25,
+      "paused_fraction": 0.35,
+      "spacing_m": 0.5,
+      "warmup_hops": [
+        2,
+        4
+      ],
+      "travel_hops": [
+        1,
+        1
+      ],
+      "pause_hops": [
+        4,
+        8
+      ],
+      "fixed_heading_fraction": 0.5,
+      "scope": "For selected routes, hold 2..4 hops, then move twice with the same or reversed heading and hold 4..8 hops. Repeat within the workspace. Draw a heading and a stride per episode. Exact Y is oversampled symmetrically; free headings cover the circle.",
+      "paused_travel_hops": [
+        2,
+        2
+      ],
+      "fixed_axis_y_fraction": 0.5,
+      "paired_long_steps": {
+        "min_spacing_m": 0.3,
+        "full_spacing_probability": 0.5
+      }
+    },
+    "training_min_radius_m": 0.0,
+    "training_adjacent_hops": {
+      "full_step_probability": 0.3,
+      "straight_probability": 0.25,
+      "right_angle_probability": 0.25,
+      "reverse_probability": 0.25
+    },
+    "ab_pair_training": true,
+    "ab_full_pair_focus": true,
+    "ab_pair_only": true,
+    "ab_opening_hold_probability": 0.25,
+    "ab_miss_recovery": {
+      "retry_probability": 0.25,
+      "local_hold_probability": 0.25
+    }
+  },
+  "output_series": "benchmark73_precision10_v50/v84_transverse_rebound",
+  "ab_spawn": {
+    "probability": 0.5,
+    "xy_radius_m": 0.04,
+    "roll_pitch_deg": 7.0,
+    "yaw_deg": 5.0,
+    "xy_speed_m_s": 0.2,
+    "z_speed_m_s": 0.1,
+    "roll_pitch_rate_rad_s": 0.6,
+    "yaw_rate_rad_s": 0.25
+  },
+  "observation_notes": "73D=59 proprioception/ground-target/history/contact + crossing position3,relative quaternion wxyz4,desired velocity3,desired angular velocity3,state1. State history40/20ms;motor actions40/20/10ms. Desired quaternion derives from the T-frame world orientation and desired body-to-T alignment.",
+  "crossing_command": {
+    "enabled": false,
+    "reference_point": "A root link",
+    "state": 0,
+    "reason": "Learn ground displacement first; gate pose/velocity tracking reward is the next curriculum, not active here."
+  },
+  "candidate_notes": "Single training-only transverse rebound reference from completed V82 model_249. Predict signed outgoing lateral speed before plausibly accurate A-to-B straight continued rebound in the +/-Y sectors. Target side speed comes from the predicted foot and the next corridor; the actuation path receives the same policy action.",
+  "history_sampling": {
+    "control_dt_s": 0.01,
+    "state_offsets_ms": [
+      40,
+      20
+    ],
+    "motor_action_offsets_ms": [
+      40,
+      20,
+      10
+    ],
+    "action_slot_order": "45:49 oldest40ms,49:53 middle20ms,53:57 latest10ms",
+    "initialization": "zero history until each requested sample age is available; true reset clears all buffers; no reset on touchdown/target change"
+  },
+  "t_frame_command": {
+    "enabled": false,
+    "scope": "Omni distance/precision stage; spatial crossing command remains inactive. A crossing task must enable T targets and bind geometry plus quaternion tracking reward to the same sampled pose.",
+    "center_local_m": [
+      0.27,
+      0.0,
+      0.85
+    ],
+    "quaternion_world_t_wxyz": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "local_rpy_jitter_deg": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "offset_A_in_t_m": [
+      0.0,
+      0.0,
+      0.0763333333333333
+    ],
+    "quaternion_t_body_wxyz": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "velocity_in_t_m_s": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "angular_velocity_in_t_rad_s": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "velocity_note": "Zero is inactive placeholder here; a real crossing curriculum must choose reachable positive forward robot velocity.",
+    "frame_convention": "+X directed passage normal,+Y crossbar,+Z up; T stem follows-Z",
+    "publish": "q_WB_des=q_WT*q_TB_des; q_relative=conjugate(q_WB)*q_WB_des; normalize/canonicalize wxyz before policy observation"
+  },
+  "stationary_retention": {
+    "training_stationary_fraction": 0.0,
+    "baseline_checkpoint": "outputs/benchmark73_vertical/train_seed42_20261112_130123_868802Z/model_99.pt",
+    "baseline_summary": "outputs/benchmark73_vertical/eval_seed7001_20261112_131235_634151Z/summary.json",
+    "baseline_cases": "outputs/benchmark73_vertical/eval_seed7001_20261112_131235_634151Z/cases.json",
+    "baseline_reference_flight_reward": {
+      "version": "stage4l_flight_and_landing_kernels_event_xy_v1",
+      "energy_margin_m": 0.04,
+      "height_width_m": 0.4,
+      "apex_height_width_m": 0.18,
+      "apex_speed_width_m_s": 0.35,
+      "apex_deficit_scale": 50.0,
+      "reference_stationary_run": "outputs/benchmark37_stage2e_pretouch/train_seed42_20261026_032020_799352Z",
+      "reference_calibrated_run": "outputs/benchmark37_stage4l_landing_gain/train_seed42_20261102_034630_836993Z",
+      "continuous": "Native positive continuous energy centre1.04m retained; dense height/apex reward centres1.04m with unchanged scales/widths/dt; command1m and strict1m unchanged",
+      "landing": "6*exp(-0.5*(e_foot/0.05m)^2), once, gated at1m/10cm/15deg; no first-two multiplier for this stationary task",
+      "underheight": "-50*relu(1m-final_peak), once at valid touchdown, independent of foot error/tilt; initial drop excluded",
+      "intentional_difference": "XY/goal remain once at touchdown (existing cycle quality), to avoid paying for stationary hovering;73D/v2 physics and existing stabilizers retained",
+      "evidence_limit": "Historical stable37D stationary results are design references, not a performance guarantee for73D under calibratedv2 physics",
+      "height_reward_margin_m": 0.04,
+      "margin_rationale": "v18 fixed64+64 gate:148 jump5+ under1m,127 within1cm; align dense height/apex centre1.04m with unchanged1.04m energy centre. Strict height command/threshold1m unchanged.",
+      "margin_validation": "CPU config/kernel/checkpoint-interface checks only; user-started training and one new fixed128 evaluation required"
+    },
+    "allocation": "All training lanes sample AB pairs. Stationary retention remains a separate evaluation.",
+    "reward": "Stationary environments restore saved-v23 dense centres0.04m via additive kernel deltas. Moving environments retain verified-v2 reward margin0.06m; other shared costs/landing terms unchanged.",
+    "acceptance": "No observed regression against saved v23:fixed cases,0 deaths,first/first-pair/first-four strict counts not lower;both nominal andweaker jump5+ sample coverage,strict rate,foot mean/P95/P99/max,apexP05,pitch span/tail/RMS and completed landings no worse. Moving andstationary evaluations must both pass before crossing training.",
+    "deployment": "Never overwrite existing deployed-v23 PY/ONNX. Candidate requires separate real-hardware validation after simulation; finite simulation comparison is not a hardware guarantee."
+  },
+  "moving_phase_reward": {
+    "version": "transport_then_landing_reward_v2",
+    "landing_clearance_m": 0.3,
+    "free_tilt_deg": 25.0,
+    "excess_tilt_weight": 80.0,
+    "scope": "All nonstationary route environments after first stationary hop,including zero-edge holds and retries;drop and physical terminals excluded. Pure stationary membership and first hop retain original reward. Snapshot masks before target advance.",
+    "phase": "Original tilt/roll-pitch-rate/leg-swing/positive-rotation-work/outward/near-upright costs: full during stance/contact; zero in ascent/high flight; on descent ramp0->1 over approximate final0.18s. T=2*h/(sqrt(vz^2+2*g*h)+abs(vz)),h=actual foot clearance clamped>=0. Existing0.30m window retained only as legacy v1 fallback.",
+    "lateral_velocity": "Remove inherited all-flight zero-XY-speed cost throughout active nonstationary routes,including holds;existing position/time-to-go velocity guide requests recovery toward the hold point rather than forbidding useful lean.",
+    "flight_quality": "Remove whole-flight precision payment discount and jump5+ settled pitch cost on active moving targets; continue collecting identical metrics. Keep strict1m/10cm/15deg scoring and all landing geometry checks.",
+    "safety": "Keep original physical terminals,native angular damping,prelanding rate braking,action-rate smoothness,vertical energy/apex/height and landing rewards. Add only excess tilt cost beyond25deg using original tilt coefficient80.",
+    "unchanged": "73D quaternion/history contract,4 direct motors,v2 physics/DR/delay/lag,route queue/retries,50%rehearsal,PPO/std/evaluation gates. Candidate is not established smoother or safer until manual training/evaluation.",
+    "landing_time_s": 0.18,
+    "anticipation_basis": "Current source env tau0.067..0.093s,command delay20..40ms.0.18s is one engineering horizon,not a sweep or exact settling time. Ballistic time ignores rotor thrust and rotating-foot motion. No motor controller or all-flight upright constraint.",
+    "include_route_holds": true,
+    "transport_outward_braking": {
+      "start_tilt_deg": 10.0,
+      "full_tilt_deg": 20.0
+    }
+  },
+  "moving_landing_guidance": {
+    "version": "remaining_time_velocity_and_touchdown_error_v1",
+    "velocity_weight": 4.0,
+    "landing_weight": 2.0,
+    "landing_width_m": 0.05,
+    "minimum_time_s": 0.15,
+    "maximum_time_s": 1.2,
+    "speed_limit_m_s": 1.2,
+    "landing_clearance_m": 0.3,
+    "apex_margin_m": 0.06,
+    "scope": "Same active nonstationary-route mask as phase reward,including zero-edge holds and retries after first hop. Guide always uses actual target minus actual foot position;drifting away from a repeated target produces restoring desired velocity. Pure stationary episodes,first hop,drop andphysical terminals receive0.",
+    "reference": "During stance,T=2sqrt(2*max(target_apex+0.06-root_height,0)/g).During flight,T=(vz+sqrt(vz^2+2*g*foot_clearance))/g.ClipT0.15..1.2s;vXY_des=(target_footXY-current_footXY)/T clipped in vector norm to1.2m/s. Recompute from current state on every retry; approximate reference,not collision/feasibility prediction.",
+    "velocity_reward": "Forecast p_foot_XY + v_A_XY*T; -4*(sqrt(1+(forecast_error/0.10m)^2)-1)*dt, with existing final30cm descent fade. Replaces the old squared velocity cost under the existing moving_velocity_guidance ledger name; not additive. No terminal zero-velocity or all-flight upright target.",
+    "landing_reward": "Once valid touchdown: -2*(sqrt(1+(foot_error/0.05)^2)-1),including inaccurate or underheight landings. Existing strict5cm/1m/15deg scorer unchanged. Initial drop,repeated contact,physical terminals and stationary/hold masks unchanged.",
+    "coefficient_basis": "Only width10->5cm;5cm matches existing native landing precision Gaussian width. Weight remains2. Cost at5/10/20cm becomes0.83/2.47/6.25 versus0.24/0.83/2.47. Velocity guide and phase costs unchanged. One engineering ablation,no sweep.",
+    "limitation": "PPO reward guidance only; thrust,drag,spring launch and rotation violate ballistic assumptions. Performance/smoothness/survival need user-started training and independent evaluations.",
+    "objective": "projected_touchdown_error_v1",
+    "projected_error_width_m": 0.1,
+    "projection_origin": "root_A_with_reference_touchdown_leg_v1",
+    "projection_clock_version": "zero_at_contact_separate_divisor_v2",
+    "long_pair_along_weight": 2.0,
+    "measured_foot_blend_s": 0.25,
+    "precision_to_contact": true
+  },
+  "moving_precision_refinement": {
+    "version": "touchdown_cost_width_only_v1",
+    "source_width_m": 0.1,
+    "width_m": 0.05
+  },
+  "projected_landing_refinement": {
+    "version": "forecast_position_cost_only_v1",
+    "diagnosis_source": "outputs/benchmark73_quaternion_outward_braking_v16/case76_diagnostic/trace.json",
+    "source_objective": "velocity_tracking_v1",
+    "width_m": 0.1,
+    "interpretation": "The projected endpoint loss uses a 0.10 m shaping width. The actual touchdown acceptance radius is 0.05 m.",
+    "validation_limit": "Single trace and reward checks cannot establish learned improvement; manual100 updates and the same128 moving plus stationary-retention cases required."
+  },
+  "rebound_transition": {
+    "initial_flight_time_s": 1.0,
+    "initial_stance_time_s": 0.06,
+    "duration_ema": 0.2,
+    "preparation_horizon_range_s": [
+      0.3,
+      0.45
+    ],
+    "velocity_gain_s": 0.14,
+    "touchdown_tilt_limit_deg": 12.0,
+    "approach_weight": 80.0,
+    "launch_weight": 4.0,
+    "cruise_acceleration_weight": 1.0,
+    "nominal_mass_kg": 0.1556,
+    "diagnosis_source": "outputs/benchmark73_quaternion_impact_alignment_v18/straight_x04_timing_diagnostic/trace.csv",
+    "timing": "Current landing point stays fixed until its physical strict touchdown is scored. NEXT outgoing velocity/foot placement is prepared during descent,0.30..0.45s horizon randomized per training hop; fixed midpoint at evaluation. Command changes at touchdown after scoring; no LSTM/history reset. Contact-to-free-lift-off velocity gets a once-only objective, including retry recovery.",
+    "reference": "foot_relative_xy = 0.5*T_stance*v_in_xy +0.14*(v_in_xy-v_out_des); cap at12deg cone. v_out_des=(P_next-P_current)/observed_flight_duration. Reference only, not an actuated-hip SLIP controller or exact impact solution. First movement launch uses the first hop contact; first-hop reward deltas remain zero.",
+    "clock": "Flight/stance duration EMAs update from past physical events only; remaining-time floor=max(EMAflight-elapsed_air,0),keeping the old ballistic clock as lower bound. Avoid demanding large late aerial acceleration due to an underestimated clock.",
+    "scope": "Only active moving members; first-hop/current stationary rewards unchanged. Pure stationary environments are untouched. Air transport cost uses actual delayed/lagged motor thrust; vertical replenishment remains available.",
+    "reference_source": "https://kodlab.seas.upenn.edu/uploads/Kod/Schwind95.pdf"
+  },
+  "moving_yaw_prediction": {
+    "response_horizon_s": 0.14,
+    "target_heading_rad": 0.0,
+    "rms_heading_goal_deg": 3.0,
+    "peak_heading_goal_deg": 10.0,
+    "reference": "Use heading derivative from the horizontal body-forward vector, not body wz. Replace only moving-route custom yaw costs by -40*wrap(heading_error+0.14*world_heading_rate)^2*dt -2*world_heading_rate^2*dt. Existing native yaw reward,actuator map and pure stationary cost remain unchanged.",
+    "free_air_peak_weight": 40.0,
+    "all_phase_envelope": {
+      "warning_deg": 6.0,
+      "heading_weight": 40.0,
+      "forecast_excess_weight": 120.0,
+      "body_z_rate_weight": 2.0
+    }
+  },
+  "touchdown_projection_reference": {
+    "version": "root_A_with_reference_touchdown_leg_v1",
+    "diagnosis_source": "outputs/benchmark73_quaternion_rebound_preview_yaw_v19/straight_x04_diagnostic/trace.csv",
+    "reference": "Forecast footXY=rootA_XY+vA_XY*T-L_rest*n_touchdown_XY. L_rest=norm(rootA-foot)+positive spring compression; n_touchdown is the existing rebound approach reference. Current airborne foot offset cannot improve the forecast merely by rotating the leg. Actual touchdown error, height, tilt and strict queue scoring still use measured physical foot; no action override or early goal advance.",
+    "limitation": "Constant-velocity position forecast remains approximate; this corrects its foot-offset reference only. No guarantee of one-hop precision or zero deaths before manual training/evaluation."
+  },
+  "moving_navigation": {
+    "version": "position_and_tilt_after_first_hop_v1",
+    "diagnosis_source": "outputs/benchmark73_quaternion_touchdown_reference_v20/straight_x04_case64_diagnostic/trace.csv",
+    "policy": "After the strict stationary first hop, advance a moving member on a valid physical landing with measured foot error<=5cm and tilt<=15deg, even if apex<1m. Holds follow the same rule. True foot/tilt misses retry current goal. Pure stationary members and first hop keep the strict-height advance rule. Goals never advance before landing.",
+    "scoring": "Strict scoring remains apex>=1m AND foot<=5cm AND tilt<=15deg. Height-only navigation advances are failed first attempts, never credited as strict hits or a perfect continuous prefix. Existing height deficit penalty and all acceptance gates stay unchanged.",
+    "source_note": "V20 model499 passed one nominal10-target straight preview but failed formal moving gate with1 death; initialization is an experimental candidate, not a promoted deployment model.",
+    "frozen_policy_validation": {
+      "source_policy_trained_for_new_course": false,
+      "optimizer_updates": 0,
+      "physical_prefix_identical_through_step": 663,
+      "new_goal_advances_at_step": 664,
+      "old_goal_index": 5,
+      "new_goal_index": 6,
+      "navigation_targets_reached": 10,
+      "strict_first_attempts": 9,
+      "retries": 0,
+      "physical_deaths": 0,
+      "strict_complete": false,
+      "scope": "Single-case frozen-weight rule ablation; underheight still failed. Not a trained v21 acceptance result."
+    }
+  },
+  "moving_rotation_prediction": {
+    "version": "constant_body_rate_max_cone_v1",
+    "response_horizon_s": 0.18,
+    "weight": 80.0,
+    "free_spring_q_max_m": 0.001,
+    "free_spring_qdot_max_m_s": 0.05,
+    "diagnosis_source": "outputs/benchmark73_quaternion_navigation_handoff_v21/case98_diagnostic/trace.json",
+    "reference": "Compute the maximum cone tilt over the next0.18s assuming current body angular velocity persists, using exact fixed-axis rotation including internal extrema. Penalize only the additional squared excess above the existing25deg free-tilt cone beyond the current-angle excess already charged. Stable lean and pure body-yaw rotation get no extra tilt cost.",
+    "scope": "Only moving-route free flight after first hop, excluding spring motion,contact,drop,stationary members and physical terminals. No motor command override,extra observation or full-flight upright reference.",
+    "limitation": "Reward prediction ignores future motor torque/contact; it is an early learning signal, not a hard safety controller or a guarantee of recovery. Yaw and foot/height gates remain independent."
+  },
+  "launch_rotation_refinement": {
+    "version": "free_liftoff_response_window_rate_v2",
+    "weight": 4.0,
+    "free_rate_rad_s": 0.6,
+    "source_checkpoint": "outputs/benchmark73_quaternion_launch_rotation_v25/train_seed42_20261116_143732_214676Z/model_299.pt",
+    "diagnosis": "v24 random-omni case67: touchdown626, first free launch632: tilt11.91deg,omega_xy1.14rad/s; airborne reversal650: omega_xy2.22rad/s; terminal745. V24 transport-rate cost active but failed. Hardware39.4..40.4s event confirmed no external contact.",
+    "objective": "During the first0.18s after actual free liftoff: -4*relu(norm(body_omega_xy)-0.6)^2*dt/0.18. Replaces the once-only event charge; contact/drop/pure stationary/physical terminals excluded. Uses actual liftoff counter,not target-switch clock. Stable lean/yaw not charged; no action override.",
+    "experiment": "Initialize v25 model299; extend the angular-rate objective through actuator response and change continuous training spacing0.4->0.5m as requested. Step/hold spacing stays0.4m. Other rewards,PPO,observation,physics,50%stationary allocation and acceptance thresholds unchanged. Bundled timing/range change,not an isolated ablation.",
+    "acceptance": "Original straight128,omni128,stationary-retention gates retained; extra step-hold128 requires3 initial stationary hops,one0.4m cardinal move,6 later holds without retries; all15s errors<=10cm,zero deaths,yaw3degRMS/10degpeak. Report body-rate and launch-rate distributions; no hardware acceptance inferred.",
+    "baseline_step_hold_evaluation": "outputs/benchmark73_quaternion_straight_focus_v23/eval_seed7001_20261116_142314_262676Z",
+    "window_s": 0.18
+  },
+  "launch_response_window_refinement": {
+    "version": "liftoff_response_window_and_continuous05_v1",
+    "source_checkpoint": "outputs/benchmark73_quaternion_launch_rotation_v25/train_seed42_20261116_143732_214676Z/model_299.pt",
+    "diagnosis_source_evaluation": "outputs/benchmark73_quaternion_launch_rotation_v25/eval_seed7001_20261116_164744_556413Z",
+    "case_id": 127,
+    "launch_step": 436,
+    "rate_peak_step": 444,
+    "rate_peak_omega_body_rad_s": [
+      -2.1605629920959473,
+      2.653109312057495,
+      -0.11214174330234528
+    ],
+    "diagnosis": "Exact first5 touchdown events reproduced with frozen weights. At free launch436 omega_xy0.744rad/s; peak3.422 occurs444,80ms later,once-only launch cost already0. First hold apex1.311m,foot miss10.65cm. Rate objective now spans delayed/lagged motor response; learning improvement and retained precision require manual training/evaluation.",
+    "window_basis": "0.18s engineering response horizon retained from existing prediction/landing windows versus20..40ms delay+67..93ms motorlag; not an identified settling time or hard safety limit.",
+    "continuous05_source_evaluation": "outputs/benchmark73_quaternion_launch_rotation_v25/eval_seed7001_20261116_170308_885691Z"
+  },
+  "long_moving_horizon": {
+    "moving_s": 60.0,
+    "stationary_s": 15.0,
+    "scope": "Only moving training episodes extend to60s; stationary rehearsal and original evaluation scopes retain15s. New cardinal queued evaluation explicitly uses60s, exceeding the47s autonomous real-flight failure horizon."
+  },
+  "moving_body_rate": {
+    "version": "free_air_roll_pitch_excess_rate_v2",
+    "weight": 4.0,
+    "free_rate_rad_s": 0.6,
+    "free_spring_q_max_m": 0.001,
+    "free_spring_qdot_max_m_s": 0.05,
+    "minimum_clearance_m": 0.05,
+    "scope": "All moving-route free-air phases after first hop,including holds; no0.18s cutoff and no airborne spring-rate exclusion. Complement of inherited landing weight avoids a duplicate landing cost. No desired upright angle or motor shaping."
+  },
+  "launch_direction_refinement": {
+    "version": "backward_and_cross_track_liftoff_v1",
+    "weight": 4.0,
+    "minimum_target_speed_m_s": 0.1,
+    "scope": "Once at actual free liftoff toward the destination latched by actual touchdown advance/retry; charge backwards and lateral velocity. Near-zero hold references excluded by minimum speed; pure stationary and first hop excluded by existing launch mask. A hold with substantial position error remains a corrective movement reference."
+  },
+  "launch_velocity_window": {
+    "version": "free_liftoff_endpoint_response_window_v1",
+    "window_s": 0.18,
+    "width_m": 0.1,
+    "minimum_clearance_m": 0.05,
+    "source_checkpoint": "outputs/benchmark73_quaternion_cardinal_queue_repair_v32/train_seed42_20261117_152453_232470Z/model_299.pt",
+    "source_evaluation": "outputs/benchmark73_quaternion_cardinal_queue_repair_v32/eval_seed7001_20261117_170332_841400Z",
+    "diagnosis": "Fixed v32 frozen-weight replay reproduces six cases first touchdowns exactly. Case71 TD420,launch427: target(-0.020,-0.513),actual(0.007,-0.150)m/s,next TD547 error0.5945m. Case79 TD413,launch419: target(-0.055,-0.545),actual(-0.630,-0.733)m/s,next TD499 error0.4214m. Reference sign symmetry passes; these traces show deficient release state,not a proven hardware/root-cause identification.",
+    "objective": "Replace moving_launch_velocity only: -launch_weight*smoothL1(norm((vXY-vXY_latched)*EMAflight)/0.10m)*dt/0.18s during first18 control samples starting at physical free liftoff. smoothL1(x)=sqrt(1+x*x)-1. Constant-state full-window budget equals one endpoint loss; expired/contact samples receive0. Actual touchdown advance/retry owns the latched velocity; no goal-switch reset or target change during flight.",
+    "scope": "Only existing active moving-route mask after first hop,including holds/retries. Require flight phase and foot clearance>5cm. Airborne spring motion cannot switch off an already started response window. No pose target,motor override,new observation,route change,heading/body-rate weight increase or weakened acceptance.",
+    "limitation": "Reward-only approximate landing consequence; EMAflight is not an exact powered-flight predictor. Units and temporal support change together as one engineering candidate; no claim of learned improvement before manual training and fixed-case evaluation.",
+    "first_long_along_discount_m_s": 0.103,
+    "release_deficit_fade_m_s": [
+      0.2597,
+      0.2922
+    ]
+  },
+  "moving_outward_tilt_work": {
+    "version": "outward_tilt_motor_work_v1",
+    "start_tilt_deg": 5.0,
+    "full_tilt_deg": 12.0,
+    "free_outward_rate_rad_s": 0.6,
+    "minimum_clearance_m": 0.05,
+    "source_evaluation": "outputs/benchmark73_quaternion_rebound_velocity_window_v33/eval_seed7001_20261118_023047_584930Z",
+    "basis": "Use the inherited rotation-work coefficient. The 5 to 12 degree ramp starts above small tilt and reaches full weight at the existing rebound reference tilt cap. Clearance and free-rate allowances reuse v33 moving body-rate scales.",
+    "scope": "Moving clear flight after the first hop. Project angular velocity and actual delayed motor torque onto the increasing-tilt direction. Penalize only simultaneous outward speed above the allowance and outward torque. Complement the existing landing-phase work weight where its native spring mask is active.",
+    "evidence": "Frozen replay of 12 terminal and 5 surviving cases matched 585 scored landings. Outward work appeared early after release in case47 and roughly970ms after release in case126. Isolated reward candidate; no learned gains measured."
+  },
+  "omni_focus": {
+    "baseline_evaluation": "outputs/benchmark73_quaternion_outward_tilt_work_v34/eval_seed7001_20261118_072414_242582Z",
+    "fixed_cases_file": "outputs/benchmark73_quaternion_projected_landing_v17/eval_seed7001_20261115_172257_993631Z/cases.json",
+    "basis": "v34 full-omni replay recorded 0/128 physical deaths, 1340/1429 strict moving first attempts and 61/1429 moving misses beyond10cm. 56 of those misses were on steps at least30cm.",
+    "scope": "Primary qualification uses the unchanged full-omni and stationary gates. Straight and cardinal routes can be evaluated afterwards as regression checks."
+  },
+  "omni_rebound_handoff": {
+    "version": "descent_preview_and_unloading_velocity_v1",
+    "turn_min_deg": 45.0,
+    "position_blend_width_m": 0.025,
+    "tilt_blend_width_deg": 3.0,
+    "near_retry_speed_max_m_s": 0.25,
+    "contact_window_s": 0.1,
+    "source_evaluation": "outputs/benchmark73_quaternion_omni_focus_v35/eval_seed7001_20261118_075619_405532Z",
+    "scope": "Reward only. Descent forecast adjusts rebound preparation on turns or a predicted miss. A predicted touchdown within5cm and15deg prepares advance. Confidence fades outside that envelope. Actual touchdown alone owns advance/retain. On spring release, cross-track velocity is penalized on successful turns, and the full velocity error is penalized for a near retry with target speed no more than0.25m/s. Reuses the0.10m endpoint loss scale and per-tick weight of the existing launch velocity window. No cap on the actual velocity and no penalty on useful along-path velocity in the new turn term.",
+    "basis": "Frozen v35 replay: case118 target9->10 retained about0.32m/s transverse velocity; cases99/118 reached1.48/1.29m/s while unloading after missed target10, against latched speed references about0.19/0.13m/s. v34 survived both. Prioritize a change before actual free liftoff.",
+    "continuation_max_angle_deg": 15.0,
+    "continuation_lead_scale": 0.0,
+    "near_retry_weight": 1.5,
+    "continuation_foot_offset_fraction": 1.0,
+    "release_carry_weight": 2.0,
+    "continuation_shortfall_weight": 1.0,
+    "shortfall_before_hold": true,
+    "south_pair_release": {
+      "speed_fraction": 0.55,
+      "weight": 2.0,
+      "heading_half_width_deg": 22.5
+    }
+  },
+  "omni_reversal_baseline": {
+    "cardinal_eval": "outputs/benchmark73_quaternion_omni_rebound_handoff_v36/eval_seed7001_20261118_090005_252685Z",
+    "purpose": "V36 passed zero-death short full-omni exposure but had15 deaths in128 continuous 60s cardinal reversals. Preserve the full-omni data distribution on most moving lanes and add specific exposure to repeated reversals.",
+    "acceptance": "Compare the same fixed full-omni, 60s cardinal, and stationary-retention protocols. Report all three; do not promote based on a reduced death count alone."
+  },
+  "guarded_keys": {
+    "version": "batched_keyboard_guard_v1",
+    "launch_multiplier": 1.5,
+    "training_pair_gap_s": 0.25
+  },
+  "zero_step_recovery": {
+    "extra_velocity_weight": 4.0,
+    "extra_speed_m_s": [
+      0.05,
+      0.18
+    ],
+    "probability": 0.35
+  },
+  "rigid_body_randomization": {
+    "factor_range": [
+      0.9,
+      1.1
+    ],
+    "scope": "Two independent uniform draws per robot per episode for physical mass and inertia. All links share the mass factor and the entire inertia tensor shares the inertia factor. Legacy mass/inertia wrench scaling is replaced; the independent motor response envelope is retained."
+  },
+  "overheight_band": {
+    "upper_m": 1.1,
+    "soft_band_m": 0.02,
+    "cost_per_m": 32.0
+  },
+  "hop_repeatability": {
+    "version": "height_phase_matched_ab_v1",
+    "sample_heights_m": [
+      0.44,
+      0.61,
+      0.79,
+      0.94
+    ],
+    "max_cost_per_sample": 0.28
+  },
+  "flight_plane_control": {
+    "plane_lean": 162.0,
+    "plane_rate": 4.0,
+    "plane_leg_speed": 162.0,
+    "hold_motor_balance": 8.0,
+    "peak_start_deg": 8.0,
+    "plane_peak": 162.0,
+    "include_hold_peak": true,
+    "hold_attitude": {
+      "weight": 180.0,
+      "free_tilt_deg": 3.0,
+      "prediction_s": 0.12,
+      "support_weight": 0.3
+    }
+  },
+  "flight_plane_limits": {
+    "lean_rms_deg": 3.0,
+    "lean_peak_deg": 10.0,
+    "rate_rms_rad_s": 0.6,
+    "leg_speed_rms_m_s": 0.1
+  },
+  "directional_landing": {
+    "omni": {
+      "short": 1.1339,
+      "long": 0.2452,
+      "cross": 0.3065
+    },
+    "straight": {
+      "short": 0.3981,
+      "long": 0.3062,
+      "cross": 0.8881
+    }
+  },
+  "precision_pre_reversal_release": {
+    "allowance_m_s": 0.17,
+    "weight": 1.3050716523835513,
+    "ascent_forecast_bias_m": 0.02788963129058914
+  },
+  "precision_window_control": {
+    "source": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/continuous_v51/round_00017",
+    "omni": {
+      "events": 112,
+      "median_m_s": [
+        -0.15718378093507557,
+        -0.11149728298187256
+      ]
+    },
+    "straight": {
+      "events": 233,
+      "median_m_s": [
+        -0.15051327811347115,
+        -0.10336579382419586
+      ]
+    }
+  },
+  "precision_release_tail_control": {
+    "source": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/continuous_v51/round_00018",
+    "comparison": "/home/terry/Desktop/workspace/Jumping-Robot/Hopper-sim-Isaac/outputs/benchmark73_precision10_v50/continuous_v51/round_00017",
+    "fade_m_s": [
+      0.2597,
+      0.2922
+    ],
+    "matched_straight": 468,
+    "strict_hits": [
+      280,
+      302
+    ],
+    "control_successes": 449,
+    "terminal_first_attempts": [
+      {
+        "case_id": 13,
+        "target": 4,
+        "deficit_m_s": 0.38237785547971725
+      }
+    ]
+  },
+  "yaw_thrust_reserve_n": 0.02,
+  "yaw_heading_servo": {
+    "position_gain_s2": 36,
+    "rate_gain_s": 10,
+    "max_yaw_mode_n": 0.14,
+    "collective_shift_max_n": 0.06
+  },
+  "yaw_contact_jump": {
+    "free_rate_jump_rad_s": 0.45,
+    "weight": 6.0
+  },
+  "imu_link_plant": {
+    "version": "imu_link_split_or_shared_timing_v1",
+    "bus_voltage_range_v": [
+      3.58,
+      3.92
+    ],
+    "voltage_basis": "P02–P98 of the other complete powered jumps, excluding all four leave-outs and immediate followers",
+    "spring": {
+      "stiffness_n_m": 584.04,
+      "damping_ns_m": 0.531
+    },
+    "profiles": [
+      {
+        "name": "split",
+        "actuator": {
+          "tau_s": 0.14500000000000002,
+          "delay_ticks": 0,
+          "thrust_scale": 0.9517301894092328,
+          "air_ascend_scale": 1.5787953604347469,
+          "air_descend_scale": 0.21528571736246754,
+          "voltage_reference_v": 3.9812498092651367
+        },
+        "attitude": {
+          "tau_s": 0.055,
+          "delay_ticks": 2.0,
+          "roll_scale": 0.3831214096635583,
+          "pitch_scale": 0.3856364526887623
+        },
+        "source": "outputs/benchmark73_precision10_v50/ab_yaw_servo_v73/imu_link_calibration_holdout/frozen_calibration.json",
+        "sha256": "ef94f5490cb857a146ed15a9cd9741b7d40606e56c383a8de1a0d6aa443c3089"
+      },
+      {
+        "name": "shared",
+        "actuator": {
+          "tau_s": 0.065,
+          "delay_ticks": 4.507124999421649,
+          "thrust_scale": 1.0037312840934864,
+          "air_ascend_scale": 3.7735831757400873,
+          "air_descend_scale": 0.5075133207146035,
+          "voltage_reference_v": 3.9812498092651367
+        },
+        "attitude": {
+          "tau_s": 0.065,
+          "delay_ticks": 4.507124999421649,
+          "roll_scale": 0.39308544250206523,
+          "pitch_scale": 0.4390726702266911
+        },
+        "source": "outputs/benchmark73_precision10_v50/ab_yaw_servo_v73/imu_link_calibration_holdout/frozen_shared_timing_calibration.json",
+        "sha256": "0bc5ac144240d70459ae5f156b24778f484cb54568740fcc5f336812a7c23516"
+      }
+    ]
+  },
+  "imu_link_flight_guidance": {
+    "version": "imu_link_powered_flight_guidance_v1",
+    "predictor_coefficients": [
+      0.13252122557536147,
+      -0.19148559807938065,
+      -0.0689351782289077,
+      0.00844264788789268,
+      8.23695638085875
+    ],
+    "predictor_source": "V73 imu_link 120839 other 47 jumps, excluding D2/D3/A2/A6 and their immediate followers",
+    "minimum_clearance_m": 0.015,
+    "minimum_vz_m_s": 0.2,
+    "full_vz_m_s": 0.7,
+    "clock_ramp_s": 0.25,
+    "maximum_clock_change_s": 0.16,
+    "height_deficit_deadband_m": 0.01,
+    "collective_cap_n": 0.13,
+    "collective_cost_weight": 3.0,
+    "motor_duty_limit": 0.965,
+    "yaw_fade_start_deg": 6.0,
+    "yaw_fade_end_deg": 10.0,
+    "roll_pitch_fade_start_deg": 12.0,
+    "roll_pitch_fade_end_deg": 24.0,
+    "scope": "First attempt at each active travel target, before apex. PPO reward guidance using the existing direct actions. Uses no motor/pose overlay at train or inference time."
+  },
+  "retry_capture": {
+    "flight_window_s": 0.14,
+    "tilt_horizon_s": 0.1,
+    "tilt_free_deg": 12.0,
+    "tilt_width_deg": 10.0,
+    "velocity_width_m_s": 0.2,
+    "velocity_weight": 6.0,
+    "tilt_weight": 6.0,
+    "require_free_ascent": true
+  },
+  "physical_robustness": {
+    "version": "planar_com_and_impulse_v1",
+    "com_radius_m": 0.005,
+    "impulse_probability": 0.25,
+    "impulse_speed_m_s": [
+      0.05,
+      0.15
+    ],
+    "impulse_flight_time_s": [
+      0.12,
+      0.28
+    ]
+  },
+  "first_landing_cross_feedback": {
+    "version": "late_ascent_first_landing_cross_v1",
+    "minimum_step_m": 0.4,
+    "start_elapsed_s": 0.25,
+    "full_elapsed_s": 0.35,
+    "minimum_remaining_s": 0.2,
+    "full_remaining_s": 0.3,
+    "descent_cutoff_m_s": 0.55,
+    "maximum_acceleration_m_s2": 0.55,
+    "error_width_m": 0.03,
+    "forecast_weight": 1.0,
+    "ascent_start_vz_m_s": 0.9,
+    "ascent_full_vz_m_s": 0.3
+  },
+  "signed_retry_rebound": {
+    "start_before_touch_s": 0.14,
+    "full_before_touch_s": 0.06,
+    "full_excess_m": 0.025,
+    "inward_start_m_s": 0.025,
+    "inward_full_m_s": 0.12,
+    "vertical_impulse_ratio": 2.0,
+    "max_reduction_deg": 6.0
+  },
+  "retry_rebound_tracking": {
+    "settling_time_constants": 2.0,
+    "lead_ramp_s": 0.08,
+    "max_preview_s": 0.27,
+    "early_guard_start_s": 0.1,
+    "early_guard_full_s": 0.25,
+    "early_guard_extra_m": 0.03,
+    "axis_prediction_limit_s": 0.09,
+    "spring_centroid_s": 0.02,
+    "support_window_s": 0.055,
+    "confirm_window_s": 0.03
+  },
+  "ws_transfer_teaching": {
+    "ascent": {
+      "version": "queued_ascent_budget_v1",
+      "protected_height_m": 1.005,
+      "target_apex_m": 1.09,
+      "max_collective_trim_n": 0.34
+    },
+    "rebound": {
+      "version": "same_direction_release_pitch_v1",
+      "minimum_incoming_m_s": 0.12,
+      "target_release_m_s": 0.3,
+      "assumed_release_vz_m_s": 2.7,
+      "maximum_lean_deg": 6.0,
+      "prediction_limit_s": 0.12,
+      "trigger_release_m_s": 0.04,
+      "full_reverse_m_s": 0.16,
+      "controller": {
+        "position_gain_n_rad": 0.38,
+        "rate_gain_n_s_rad": 0.034,
+        "max_mode_n": 0.045,
+        "activation_error_deg": 0.5,
+        "full_error_deg": 3.0,
+        "lookahead_s": 0.07
+      }
+    },
+    "landing": {
+      "version": "v81_first_landing_reference_v1",
+      "minimum_step_m": 0.4,
+      "start_elapsed_s": 0.25,
+      "full_elapsed_s": 0.4,
+      "minimum_remaining_s": 0.25,
+      "full_remaining_s": 0.4,
+      "axis_deadband_m": 0.025,
+      "start_error_m": 0.05,
+      "full_error_m": 0.1,
+      "max_accel_m_s2": 0.55,
+      "attitude": {
+        "position_gain_n_rad": 0.24,
+        "rate_gain_n_s_rad": 0.026,
+        "max_mode_n": 0.02,
+        "activation_error_deg": 0.6,
+        "full_error_deg": 2.5,
+        "lookahead_s": 0.075
+      },
+      "undertravel": {
+        "early_elapsed_s": 0.14,
+        "early_full_elapsed_s": 0.3,
+        "minimum_shortfall_m": 0.07,
+        "full_shortfall_m": 0.16,
+        "clock_uncertainty_s": 0.08,
+        "max_forward_accel_m_s2": 0.25
+      }
+    },
+    "cost_per_s": {
+      "ws_queued_ascent": 14.0,
+      "ws_forward_rebound": 8.0,
+      "ws_first_landing": 6.0
+    },
+    "opening_release_speed_m_s": 0.27,
+    "cross_rebound": {
+      "version": "signed_transverse_preimpact_v1",
+      "cost_per_s": 6.0,
+      "minimum_step_m": 0.4,
+      "axis_half_width_deg": 15.0,
+      "residual_start_m_s": 0.07,
+      "residual_width_m_s": 0.22,
+      "tilt_prediction_s": 0.1
+    }
+  }
+}

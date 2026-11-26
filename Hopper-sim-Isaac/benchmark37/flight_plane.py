@@ -1,4 +1,6 @@
 """Motion perpendicular to a commanded world-frame hop, and episode rigid-body DR."""
+import math
+
 import torch
 
 
@@ -23,6 +25,31 @@ def travel_peak_cost(lean, airborne_travel, previous, threshold, weight):
     return -weight * (peak - previous), peak
 
 
+def validate_hold_attitude(config, peak_limit_deg):
+    weight, free_tilt, horizon, support = (
+        config[key] for key in ('weight', 'free_tilt_deg', 'prediction_s', 'support_weight')
+    )
+    if not (math.isfinite(weight) and weight > 0
+            and 0 <= free_tilt < peak_limit_deg
+            and 0 < horizon <= .2 and 0 <= support <= 1):
+        raise ValueError('Invalid stationary roll/pitch envelope')
+
+
+def hold_attitude_cost(up, omega_w, lean, hold, airborne, dt, config):
+    """Charge roll/pitch cone excess over the motor response horizon in holds."""
+    spin = omega_w.norm(dim=-1, keepdim=True)
+    axis = omega_w / spin.clamp_min(1e-6)
+    angle = config['prediction_s'] * spin
+    cos_angle = angle.cos()
+    expected_up = (cos_angle * up + angle.sin() * torch.linalg.cross(axis, up)
+                   + (1. - cos_angle) * (axis * up).sum(dim=-1, keepdim=True) * axis)
+    predicted = torch.atan2(expected_up[:, :2].norm(dim=-1), expected_up[:, 2])
+    excess = (torch.maximum(lean, predicted) - math.radians(config['free_tilt_deg'])).clamp_min(0.)
+    phase_weight = torch.where(airborne, 1., config['support_weight'])
+    cost = -config['weight'] * dt * excess.square() * phase_weight
+    return torch.where(hold, cost, 0.), torch.where(hold, predicted, 0.)
+
+
 def set_rigid_scales(env, ids, scales):
     """Apply two independent per-robot factors to nominal physical masses and inertias."""
     view = env._robot.root_physx_view
@@ -35,6 +62,9 @@ def set_rigid_scales(env, ids, scales):
     view.set_masses(mass, ids)
     view.set_inertias(inertia, ids)
     env.rigid_scales[ids] = scales
+    plant = getattr(env, '_imu_link_plant', None)
+    if plant is not None:
+        plant.mass_scale[ids] = scales[:, 0].to(plant.mass_scale.device)
 
 
 def restore_rigid_scales(env, ids, cases):

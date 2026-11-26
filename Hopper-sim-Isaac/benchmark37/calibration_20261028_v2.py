@@ -38,6 +38,9 @@ class CalibratedAirMixin:
         root_q = data.root_quat_w[:, None, :].expand(-1, 2, -1)
         velocity = rotate(root_q, data.body_com_lin_vel_w, inverse=True)
         air_b = air_force_body(velocity)
+        plant = getattr(self, '_imu_link_plant', None)
+        if plant is not None:
+            plant.alter_air_force(air_b, velocity)
         force_b = air_b.clone()
         force_b[:, 0:1] += self._thrust
         torque_b = torch.zeros_like(force_b)

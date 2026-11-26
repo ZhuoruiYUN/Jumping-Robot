@@ -37,15 +37,20 @@ def straight_episode_stats(events,requested):
 
 
 class RingPreviewVisuals:
-    def __init__(self,env,show_rotors=True):
+    def __init__(self,env,show_rotors=True,*,lane=0,case_guides=False):
         from pxr import Gf,Sdf,UsdGeom,UsdShade
         import omni.usd
-        self.env=env;self.Gf=Gf;self.UsdGeom=UsdGeom
+        self.env=env;self.lane=lane;self.Gf=Gf;self.UsdGeom=UsdGeom
         stage=omni.usd.get_context().get_stage();self.stage=stage
-        # Render only env0 while retaining the multi-env actuator/DR code path.
-        for i in range(1,env.num_envs):
-            prim=stage.GetPrimAtPath(f'/World/envs/env_{i}')
-            if prim.IsValid():UsdGeom.Imageable(prim).MakeInvisible()
+        # Keep the physical batch and show only the selected lane.
+        paths=env.scene.env_prim_paths
+        for i,path in enumerate(paths):
+            if i!=lane:
+                prim=stage.GetPrimAtPath(path)
+                if prim.IsValid():UsdGeom.Imageable(prim).MakeInvisible()
+        # Cloned lanes inherit env_0. Write a stronger local opinion on the selected lane.
+        selected=UsdGeom.Imageable(stage.GetPrimAtPath(paths[lane]))
+        selected.CreateVisibilityAttr().Set(UsdGeom.Tokens.inherited)
         base='/Visuals/RingPlayback'
         course=env.course;r=course['inner_radius_m'];outer=r+course['tube_radial_width_m']
         half=course['axial_thickness_m']/2;segments=128
@@ -69,6 +74,17 @@ class RingPreviewVisuals:
             sphere=UsdGeom.Sphere.Define(stage,base+'/'+name);sphere.CreateRadiusAttr(size)
             sphere.CreateDisplayColorAttr([Gf.Vec3f(*color)])
             self.targets.append(UsdGeom.Xformable(sphere).AddTranslateOp())
+        self.heading_guides=[]
+        if case_guides:
+            radius=env.landing_radius_m
+            for name,color in (('CurrentRadius',(1.,.35,0.)),('PreviewRadius',(.6,.1,.9))):
+                line=self.polyline(base+'/'+name,color,33,.004)
+                line.CreatePointsAttr([Gf.Vec3f(radius*math.cos(i*math.tau/32),
+                    radius*math.sin(i*math.tau/32),-.013) for i in range(33)])
+                transform=UsdGeom.Xformable(line).AddTranslateOp()
+                self.targets.append(transform)
+            for name,color in (('ReferenceHeading',(.3,.75,1.)),('ActualHeading',(.05,1.,.48))):
+                self.heading_guides.append(self.polyline(base+'/'+name,color,3,.012))
         if getattr(env,'preview_straight_spacing',None) is not None:
             origin=env._terrain.env_origins[0].detach().cpu().tolist()
             spacing=env.preview_straight_spacing
@@ -100,24 +116,85 @@ class RingPreviewVisuals:
         # No CollisionAPI or rigid-body API is attached to any preview marker.
         self.update()
 
+    def polyline(self,path,color,count,width):
+        line=self.UsdGeom.BasisCurves.Define(self.stage,path)
+        line.CreateTypeAttr('linear')
+        line.CreateCurveVertexCountsAttr([count])
+        line.CreateWidthsAttr([width])
+        line.CreateDisplayColorAttr([self.Gf.Vec3f(*color)])
+        return line
+
     def update(self):
-        import torch
         from .ring_geometry import rotate
-        env=self.env;Gf=self.Gf
-        center=env.ring.center[0].detach().cpu().tolist()
+        env=self.env;Gf=self.Gf;lane=self.lane
+        center=env.ring.center[lane].detach().cpu().tolist()
         self.ring_transform.Set(Gf.Vec3d(*center))
-        color=(1.,.08,.04) if bool(env.ring.collision[0]) else (.1,.85,.25) if bool(env.ring.passed[0]) else (1.,.7,.1)
+        color=(1.,.08,.04) if bool(env.ring.collision[lane]) else (.1,.85,.25) if bool(env.ring.passed[lane]) else (1.,.7,.1)
         if color!=self.last_color:
             self.ring.CreateDisplayColorAttr([Gf.Vec3f(*color)]);self.last_color=color
-        for op,point in zip(self.targets,(env._two_ground_pt_xy_w[0],env._two_ground_pt1_xy_w[0])):
-            xy=point.detach().cpu().tolist();op.Set(Gf.Vec3d(xy[0],xy[1],.02))
+        targets=(env._two_ground_pt_xy_w[lane],env._two_ground_pt1_xy_w[lane])
+        ground_z=float(env._terrain.env_origins[lane,2])
+        positions=[Gf.Vec3d(*point.detach().cpu().tolist(),ground_z+.02) for point in targets]
+        for op,position in zip(self.targets,positions*2):
+            op.Set(position)
         if self.rotors:
-            d=env._robot.data;q=d.root_quat_w[0]
+            d=env._robot.data;q=d.root_quat_w[lane]
             offsets=d.root_link_pos_w.new_tensor([[-.0813,-.0813,0.],[-.0813,.0813,0.],[.0813,-.0813,0.],[.0813,.0813,0.]])
-            positions=(rotate(q[None,:].expand(4,-1),offsets)+d.root_link_pos_w[0]).detach().cpu().tolist()
+            positions=(rotate(q[None,:].expand(4,-1),offsets)+d.root_link_pos_w[lane]).detach().cpu().tolist()
             a=q.detach().cpu().tolist();orientation=Gf.Quatf(a[0],Gf.Vec3f(*a[1:]))
             for (translate,orient),position in zip(self.rotors,positions):
                 translate.Set(Gf.Vec3d(*position));orient.Set(orientation)
+        if self.heading_guides:
+            d=env._robot.data
+            x,y,z=d.root_link_pos_w[lane].tolist()
+            q=d.root_quat_w[lane]
+            forward=rotate(q[None],q.new_tensor([[1.,0.,0.]]))[0].tolist()
+            heading=math.atan2(forward[1],forward[0])
+            reference=env.course.get('moving_yaw_prediction',{}).get('target_heading_rad',0.)
+            for line,angle,height in zip(self.heading_guides,(reference,heading),(z+.13,z+.15)):
+                dx,dy=math.cos(angle),math.sin(angle)
+                line.CreatePointsAttr([Gf.Vec3f(x,y,height),Gf.Vec3f(x+.20*dx,y+.20*dy,height),
+                    Gf.Vec3f(x+.15*dx-.033*dy,y+.15*dy+.033*dx,height)])
+
+
+def replay_evaluation_case(app,raw,wrapped,native_policy,policy,canonical,observation,args):
+    """Step the original evaluation batch, with one lane visible in the GUI."""
+    import torch
+    lane=args.preview_case
+    visuals=None
+    if raw.sim.has_gui():
+        visuals=RingPreviewVisuals(raw,lane=lane,case_guides=True,show_rotors=False)
+    if visuals is not None:
+        print(f'OMNI_PREVIEW orange=current {100*raw.landing_radius_m:g} cm target, '
+              'purple=next, blue=reference yaw, green=actual yaw. '
+              f'Camera {"follows the hopper" if args.preview_follow_camera else "uses manual viewport controls"}.',
+              flush=True)
+    episode=raw.evaluation.episodes[lane]
+    event_count=0
+    steps=0
+    with torch.inference_mode():
+        while steps<args.preview_steps and app.is_running():
+            started=time.perf_counter()
+            observation,_,done,_=wrapped.step(policy(observation))
+            native_policy.reset(done)
+            if canonical is not None:canonical.reset(done)
+            steps+=1
+            for event in episode.events[event_count:]:
+                print('OMNI_PREVIEW_TOUCHDOWN='+json.dumps({
+                    'step':event['touchdown_step'],'target':event['target_index'],
+                    'attempt':event['attempt_for_target'],'landing_error_cm':round(event['foot_error_m']*100,2),
+                    'strict':event['strict']}),flush=True)
+            event_count=len(episode.events)
+            if raw.evaluation.finished[lane]:break
+            if visuals is not None:
+                visuals.update()
+                remaining=raw.step_dt*args.preview_slow_motion-(time.perf_counter()-started)
+                if remaining>0:time.sleep(remaining)
+    row=next((row for row in raw.evaluation.rows if row['case_id']==lane),None)
+    if visuals is not None and row is not None:
+        raw.sim.render()
+        time.sleep(.75)
+    return dict(case_id=lane,steps=steps,events=episode.events,terminal_result=row)
 
 
 def main():

@@ -85,7 +85,7 @@ def select_course(trajectory,folder):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode',choices=('offline','diagnose','smoke','train','eval','obs-check'))
+    parser.add_argument('mode',choices=('offline','diagnose','smoke','train','eval','obs-check','ab-check'))
     parser.add_argument('--seed',type=int)
     parser.add_argument('--checkpoint',type=Path)
     parser.add_argument('--initialize-from',type=Path,help='Initialize from a completed ring checkpoint with the same observation contract; fresh optimizer and iteration0')
@@ -95,6 +95,8 @@ def main():
     parser.add_argument('--initialize-stationary-quaternion-from',type=Path,help='Explicit deployed-v23 legacy stationary ring73 -> new quaternion73; fresh optimizer')
     parser.add_argument('--initialize-distilled-from',type=Path,help='Initialize73D stationary PPO from an approved completed teacher distillation; fresh optimizer and iteration0')
     parser.add_argument('--from-scratch',action='store_true',help='Initialize a new OBS73 policy and normalizers; no49D/CTBR weight transfer')
+    parser.add_argument('--ab-policy',choices=('mlp','lstm'),
+                        help='Matched cold-start AB training; choose feedforward or recurrent policy')
     parser.add_argument('--profile',choices=tuple(TRAINING_PROFILES),help='Training parallelism; OBS73 omni defaults to 1024 environments')
     parser.add_argument('--iterations',type=int,help='Overrides the course training budget (default50 for ring fine-tuning)')
     parser.add_argument('--ring-config',type=Path,help='Explicit independent geometry configuration; defaults to the checkpoint course for eval')
@@ -104,6 +106,20 @@ def main():
     parser.add_argument('--straight-x-step-m',type=float,help='Evaluation-only fixed+X route, with all128 saved release/DR cases')
     parser.add_argument('--straight-jumps',type=int,default=10,help='First moving targets required for straight evaluation (default10); retain full15s exposure')
     parser.add_argument('--precision-suite',choices=('development','holdout','opposite_straight','continuous','ab_continue','ab_reverse'))
+    parser.add_argument('--audit-all-phase-yaw',action='store_true',
+                        help='Also measure full-episode yaw on a comparison checkpoint in eval')
+    parser.add_argument('--isolate-eval-reset-rng',action='store_true',
+                        help='Keep post-quota resets from shifting the first-episode observation and delay RNG')
+    parser.add_argument('--canonical-axis', action='store_true',
+                        help='Evaluate the yaw-preserving mirrored-input V57 controller on omni ground goals')
+    parser.add_argument('--yaw-feedback', action='store_true',
+                        help='Evaluate independent yaw correction in the calibrated nominal thrust mixer')
+    parser.add_argument('--waypoint-source',help='60s online evaluation with module:function(case_id,next_index,current_xy)')
+    parser.add_argument('--preview-case',type=int,help='Replay one visible lane of the original 128-case omni batch')
+    parser.add_argument('--preview-steps',type=int,help='Maximum control steps for replay (default 1300)')
+    parser.add_argument('--preview-slow-motion',type=float,help='Wall seconds per simulation second in GUI replay (default 1.5)')
+    parser.add_argument('--preview-follow-camera',action='store_true',
+                        help='Follow the hopper in a GUI replay. The viewport camera is free by default.')
     parser.add_argument('--fresh-holdout-seed',type=int)
     parser.add_argument('--step-hold-eval',action='store_true',help='Separate128-case cardinal0.4m step then hold evaluation')
     parser.add_argument('--cardinal-queue-eval',action='store_true',help='Separate128-case four-direction0.5m move3/hold/reverse60s evaluation')
@@ -114,6 +130,8 @@ def main():
     from isaaclab.app import AppLauncher
     AppLauncher.add_app_launcher_args(parser)
     args=parser.parse_args()
+    if args.isolate_eval_reset_rng and (args.mode != 'eval' or args.preview_case is not None):
+        parser.error('--isolate-eval-reset-rng requires a scored first-episode evaluation')
     # Kit107.3 telemetry collects display info on a worker during startup.
     # Observed headless SIGSEGV: XOpenDisplay -> getenv, before model loading.
     # The installed omni.kit.telemetry docs support serial startup via this
@@ -144,6 +162,17 @@ def main():
     evaluating=args.mode=='eval'
     retention_eval=args.stationary_retention_eval
     straight_eval=args.straight_x_step_m is not None
+    preview=args.preview_case is not None
+    if preview:
+        import math
+        if not evaluating or retention_eval or not 0 <= args.preview_case < 128:
+            parser.error('--preview-case requires an omni evaluation case in 0..127')
+        if args.preview_steps is None:args.preview_steps=1300
+        if args.preview_slow_motion is None:args.preview_slow_motion=1.5
+        if args.preview_steps<=0 or not math.isfinite(args.preview_slow_motion) or args.preview_slow_motion<0:
+            parser.error('Replay requires positive steps and finite nonnegative pacing')
+    elif args.preview_steps is not None or args.preview_slow_motion is not None or args.preview_follow_camera:
+        parser.error('Replay controls require --preview-case')
     if args.cardinal_queue_eval and (not evaluating or retention_eval or straight_eval or args.step_hold_eval or not args.cases_file):
         parser.error('Cardinal queue requires eval and --cases-file; incompatible with other evaluation scopes')
     if args.step_hold_eval and (not evaluating or retention_eval or straight_eval or not args.cases_file):
@@ -165,12 +194,18 @@ def main():
     if args.seed!=expected_seed:raise ValueError('Seed does not match the selected protocol')
     diagnostic=args.mode=='diagnose';smoke=args.mode=='smoke';obs_check=args.mode=='obs-check'
     if args.cases_file and not evaluating:parser.error('--cases-file is evaluation-only')
-    if args.initialize_from and args.mode not in ('train','smoke'):parser.error('--initialize-from is training-only')
+    ab_check = args.mode == 'ab-check'
+    if args.waypoint_source and (not evaluating or args.precision_suite or args.cases_file or retention_eval
+                                 or straight_eval or args.step_hold_eval or args.cardinal_queue_eval):
+        parser.error('Use --waypoint-source with an independent moving evaluation')
+    if args.initialize_from and args.mode not in ('train','smoke','ab-check'):parser.error('--initialize-from requires train, smoke or ab-check')
     if args.initialize_distilled_from and (args.mode!='train' or args.initialize_from or args.from_scratch):
         parser.error('--initialize-distilled-from is exclusive with other initialization options and only supports train')
     if args.from_scratch and (args.initialize_from or args.mode not in ('train','smoke','obs-check')):
         parser.error('--from-scratch is exclusive with --initialize-from and only supports train/smoke/obs-check')
     if args.iterations is not None and args.iterations<1:parser.error('--iterations must be positive')
+    if args.ab_policy and not (args.mode=='train' and args.from_scratch and args.ring_config):
+        parser.error('--ab-policy requires train --from-scratch and an explicit AB course')
     initial_source=SOURCE
     if args.initialize_from:
         initial_source=args.initialize_from.resolve(strict=True)
@@ -184,7 +219,7 @@ def main():
                 or parent.get('seed')!=42 or not parent.get('teacher_gate',{}).get('passed')
                 or not parent.get('student_gate',{}).get('passed')):
             raise ValueError('Use a completed73D distillation that passed both teacher and student gates')
-    if not SOURCE.is_file():raise FileNotFoundError(SOURCE)
+    if not evaluating and not args.ab_policy and not initial_source.is_file():raise FileNotFoundError(initial_source)
     if evaluating:
         if args.checkpoint is None:parser.error('eval requires --checkpoint')
         args.checkpoint=args.checkpoint.resolve(strict=True)
@@ -196,11 +231,20 @@ def main():
         course=json.loads((args.ring_config or COURSE).read_text())
         if course.get('task') not in ('obs73_stationary_foundation_v1','obs73_fixed_wide_ring_stage_b_v1','obs73_omni_ground_targets_v1'):
             if course['status']!='frozen_for_r1' or course['r0_source_complete_samples']<1:raise ValueError('R0 required')
+    yaw_prediction = course.get('moving_yaw_prediction') or {}
+    if args.audit_all_phase_yaw and not (evaluating and yaw_prediction and course.get('moving_phase_reward')):
+        parser.error('--audit-all-phase-yaw requires an evaluation with moving yaw prediction')
     min_loop=course.get('task')=='drop_stationary_ring_stationary2_v1'
     stage_b=course.get('task')=='obs73_fixed_wide_ring_stage_b_v1'
     stationary=course.get('task')=='obs73_stationary_foundation_v1'
     omni=course.get('task')=='obs73_omni_ground_targets_v1'
     retention=bool(course.get('stationary_retention'))
+    if args.ab_policy and not (omni and course['omni'].get('ab_pair_only') and course.get('runner_config_source')):
+        parser.error('--ab-policy requires an AB-only omni course with a saved runner configuration')
+    if ab_check and not (omni and course['omni'].get('ab_pair_only') and args.initialize_from):
+        parser.error('ab-check requires the AB-only course and its parent checkpoint')
+    if evaluating:
+        initial_source = args.checkpoint
     evaluation_source_course=course
     if evaluating and args.cardinal_queue_eval and omni:
         from copy import deepcopy
@@ -218,6 +262,13 @@ def main():
             parser.error('Stationary retention uses exactly the saved deployed-v23 cases')
         args.cases_file=expected_cases
     evaluation_scope='stationary_retention' if retention_eval else 'moving'
+    if args.waypoint_source:
+        from .waypoint_stream import load_source
+        waypoint_source = load_source(args.waypoint_source)
+        if not (omni and course.get('moving_navigation') and course.get('long_moving_horizon')
+                and course['omni']['strict_foot_m'] == .05):
+            parser.error('Online waypoints require the 5cm long-horizon omni checkpoint')
+        evaluation_scope = 'online_waypoints'
     if args.precision_suite:
         if not omni or course['omni']['strict_foot_m']!=.05 or not course.get('long_moving_horizon'):
             parser.error('Precision qualification requires the 5cm long-horizon omni course')
@@ -289,24 +340,39 @@ def main():
                 if (prior.get('mode')=='eval' and prior.get('checkpoint')==str(args.checkpoint)
                         and (prior.get('status') in ('running','complete') or (old.parent/'summary.json').exists())):
                     raise ValueError(f'Recovery checkpoint already evaluated: {old.parent}; read that result')
+    if args.canonical_axis or args.yaw_feedback:
+        if not (evaluating and omni and not retention_eval
+                and course.get('observation_version') == 'direct_motor_crossing_quaternion73_history40_20_v1'):
+            parser.error('Controller options require quaternion OBS73 omni waypoint evaluation')
+        if args.yaw_feedback and 'target_heading_rad' not in yaw_prediction:
+            parser.error('--yaw-feedback requires a fixed heading from the course')
+        if args.yaw_feedback and course.get('yaw_thrust_reserve_n') is not None:
+            parser.error('This course already applies yaw feedback with reserved thrust')
+    if preview and not omni:
+        parser.error('--preview-case requires an omni checkpoint')
     if stationary and obs_dim!=73:parser.error('Stationary foundation requires the73D observation contract')
     if args.initialize_distilled_from and not stationary:parser.error('Distilled initialization is for the stationary foundation PPO stage')
     if obs_dim==73 and not (min_loop or stationary or stage_b or omni):parser.error('OBS73 requires an explicit73D task course')
     if omni:
-        if args.mode not in ('train','eval') or args.from_scratch or args.initialize_distilled_from:
+        calibrated_smoke = (smoke and course.get('imu_link_plant')
+                            and course['omni'].get('ab_pair_only') and args.initialize_from)
+        if (args.mode not in ('train','eval','ab-check') and not calibrated_smoke
+                or (args.from_scratch and not args.ab_policy) or args.initialize_distilled_from):
             parser.error('Omni bridge requires matching initialization (or explicit73->72 migration), or its saved model for eval; use dedicated zero-update check')
-        if not evaluating:
+        if not evaluating and not args.ab_policy:
             if not args.initialize_from:parser.error('Omni bridge requires --initialize-from')
             qualified=(ROOT/course['omni']['initial_checkpoint']).resolve()
             if initial_source!=qualified and parent.get('course',{}).get('task')!=course['task']:
                 parser.error('Omni source must be its v23 stationary foundation or own completed omni model')
-        else:
+        elif evaluating:
             if evaluation_source_course!=json.loads((args.checkpoint.parent/'ring_config.json').read_text()):
                 parser.error('Omni eval must use its checkpoint saved course')
             for old in (ROOT/'outputs'/course.get('output_series','benchmark73_omni_v1')).glob('*/manifest.json'):
                 prior=json.loads(old.read_text())
-                if (prior.get('mode')=='eval' and prior.get('checkpoint')==str(args.checkpoint)
+                if (not preview and not args.waypoint_source and prior.get('mode')=='eval' and prior.get('checkpoint')==str(args.checkpoint)
                         and prior.get('evaluation_scope','moving')==evaluation_scope
+                        and bool(prior.get('canonical_axis')) == args.canonical_axis
+                        and bool(prior.get('yaw_feedback')) == args.yaw_feedback
                         and (prior.get('status') in ('running','complete') or (old.parent/'summary.json').exists())):
                     raise ValueError(f'Omni checkpoint already evaluated: {old.parent}; read that result')
     stage_a_gate=None
@@ -354,9 +420,9 @@ def main():
     if args.initialize_distilled_from:validate_checkpoint_course(initial_source,course)
     if args.profile is None:
         args.profile='vram_1024' if omni and obs_dim==73 else 'vram_768'
-    n=128 if evaluating else (16 if diagnostic or smoke or obs_check else TRAINING_PROFILES[args.profile])
+    n=128 if evaluating else (16 if diagnostic or smoke or obs_check or ab_check else TRAINING_PROFILES[args.profile])
     iterations=args.iterations if args.iterations is not None else course.get('training_iterations',50)
-    updates=0 if evaluating or obs_check else (2 if smoke else iterations)
+    updates=0 if evaluating or obs_check or ab_check else (2 if smoke else iterations)
     stamp=datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%fZ')
     series=ROOT/'outputs/benchmark37_ring_r1_v2' if course['envelope']['version']=='full_assembly_disk_prisms_swept_v2' else SERIES
     if min_loop:series=ROOT/'outputs/benchmark37_ring_min_loop'
@@ -371,12 +437,25 @@ def main():
         from .obs73_ring_stage_b import output_series
         series=ROOT/'outputs'/output_series(course)
     if omni:series=ROOT/'outputs'/course.get('output_series','benchmark73_omni_v1')
-    folder=(args.output or series/f'{args.mode}_seed{args.seed}_{stamp}').resolve()
+    ab_policy = trained.get('ab_policy') if evaluating else args.ab_policy
+    if ab_policy:
+        series=series/'architecture_comparison'/ab_policy
+    run_mode='preview' if preview else args.mode
+    folder=(args.output or series/f'{run_mode}_seed{args.seed}_{stamp}').resolve()
     folder.mkdir(parents=True,exist_ok=False)
-    manifest=dict(status='starting',mode=args.mode,seed=args.seed,num_envs=n,requested_iterations=updates,
+    manifest=dict(status='starting',mode=run_mode,seed=args.seed,num_envs=n,requested_iterations=updates,
                   steps_per_update=256,source=str(initial_source),course=course,
                   physics_revision='sysid_20261028_spring_air_v2_local_wrench',
                   initialization='41->49 zero input expansion, copied std/normalizers, fresh optimizer, iteration0')
+    if ab_policy:
+        manifest['ab_policy']=ab_policy
+    if args.canonical_axis:
+        manifest['canonical_axis'] = 'dominant horizontal waypoint axis, dual recurrent histories'
+    if args.yaw_feedback:
+        manifest['yaw_feedback'] = 'bounded heading feedback in the nominal thrust yaw mode'
+    if preview:
+        manifest.update(preview_case=args.preview_case,preview_steps=args.preview_steps,
+                        preview_camera='follow' if args.preview_follow_camera else 'free')
     if evaluating:manifest.update(checkpoint=str(args.checkpoint),initialization=f'strict{obs_dim}D checkpoint inference; no optimizer or normalizer updates',case_version='ring_r1_seed7001_initial128_v1')
     if evaluating and (omni or course.get('stationary_quaternion_recovery')):manifest['evaluation_scope']=evaluation_scope
     if straight_spec:manifest['straight_evaluation']=straight_spec
@@ -399,6 +478,8 @@ def main():
     if args.from_scratch:
         manifest.update(source=None,runner_config_source=str(initial_source.parent/'runner_config.json'),
                         initialization='new73D actor/critic/LSTM, fresh normalizers/optimizer, configured initial std, iteration0; no source weights loaded')
+    if args.ab_policy:
+        manifest.update(initialization='random actor/critic, fresh normalizers and optimizer, configured initial std')
     write(folder/'manifest.json',manifest);print('BENCHMARK37_RING_RUN='+str(folder),flush=True)
     app=None;raw=None
     try:
@@ -420,7 +501,12 @@ def main():
         cfg.csv_log_path=str(folder/'single_env.csv')
         # Verify every inherited setting directly against the source artifact,
         # allowing only the declared task dimensions and output/count changes.
-        expected=json.loads((SOURCE.parent/'env_config.json').read_text())
+        reference_env = SOURCE.parent/'env_config.json'
+        if (not reference_env.is_file() and omni and course.get('long_moving_horizon')
+                and course['omni']['strict_foot_m'] == .05):
+            reference_env = ROOT/'training_config_v51/ab/env_config.json'
+            cfg.episode_length_s=course['long_moving_horizon']['moving_s']
+        expected=json.loads(reference_env.read_text())
         actual=clean(cfg.to_dict())
         for key in ('seed','observation_space','csv_log_path'):expected[key]=actual[key]
         expected['scene']['num_envs']=n
@@ -433,15 +519,40 @@ def main():
         if horizon:
             if not (omni and retention and horizon.get('moving_s')==60. and horizon.get('stationary_s')==15.):
                 raise ValueError('Long moving horizon requires moving60s and retained stationary15s')
-            cfg.episode_length_s=60. if queue_spec or not evaluating or args.precision_suite=='continuous' else 15.
+            cfg.episode_length_s=60. if queue_spec or not evaluating or args.precision_suite=='continuous' or args.waypoint_source else 15.
             actual=clean(cfg.to_dict());manifest['task_episode_horizon_s']=cfg.episode_length_s
         elif queue_spec:
             cfg.episode_length_s=60.;actual=clean(cfg.to_dict());manifest['task_episode_horizon_s']=60.
+        if preview:
+            cfg.debug_vis=False
+            cfg.viewer.env_index=args.preview_case
+            if args.preview_follow_camera:
+                cfg.viewer.origin_type='asset_root'
+                cfg.viewer.asset_name='robot'
+                cfg.viewer.eye=(1.35,-1.95,.85)
+                cfg.viewer.lookat=(0.,0.,0.)
+            else:
+                cfg.viewer.origin_type='env'
+                cfg.viewer.eye=(1.35,-1.95,1.35)
+                cfg.viewer.lookat=(0.,0.,.50)
+            actual=clean(cfg.to_dict())
         write(folder/'env_config.json',actual);write(folder/'ring_config.json',course)
         runner_config_path=(args.checkpoint.parent if evaluating else initial_source.parent)/'runner_config.json'
         if (vertical or stage_b) and not evaluating and course.get('runner_config_source'):
             runner_config_path=ROOT/course['runner_config_source']
         rc=json.loads(runner_config_path.read_text())
+        if args.canonical_axis and rc['policy'].get('rnn_type') != 'lstm':
+            raise ValueError('--canonical-axis requires a saved recurrent LSTM actor')
+        if args.ab_policy:
+            policy_cfg=rc['policy']
+            if policy_cfg['class_name']!='ActorCriticRecurrent' or policy_cfg['rnn_type']!='lstm' or policy_cfg['rnn_num_layers']!=1:
+                raise ValueError('Matched comparison expects the single-layer LSTM reference configuration')
+            if args.ab_policy=='mlp':
+                width=policy_cfg.pop('rnn_hidden_dim')
+                for key in ('actor_hidden_dims','critic_hidden_dims'):
+                    policy_cfg[key]=[width,*policy_cfg[key]]
+                policy_cfg.update(class_name='ActorCritic')
+                del policy_cfg['rnn_type'],policy_cfg['rnn_num_layers']
         if (vertical or stage_b) and course['vertical_pretraining'].get('jump_cycle_reward'):
             if course['vertical_pretraining']['jump_cycle_reward']['gamma'] != rc['algorithm']['gamma']:
                 raise ValueError('Jump-cycle potential shaping must use the PPO discount')
@@ -528,6 +639,9 @@ def main():
         elif evaluating:
             from .ring_evaluation import RingEvalEnv
             env_type=RingEvalEnv
+        if args.waypoint_source:
+            env_type.waypoint_source = staticmethod(waypoint_source)
+            manifest.update(waypoint_source=args.waypoint_source, case_version=evaluation_scope)
         raw=env_type(cfg,course,diagnostic=diagnostic)
         if straight_spec:raw.straight_evaluation_spec=straight_spec
         if step_hold_spec:raw.step_hold_evaluation_spec=step_hold_spec
@@ -557,6 +671,9 @@ def main():
             manifest['asset_audit'] = manifest['nominal_asset_audit']
         else:
             manifest['asset_audit'] = validate_asset(audit_asset(raw,cfg.robot.spawn.usd_path))
+        if course.get('imu_link_plant'):
+            manifest['imu_link_plant_audit'] = raw.install_imu_link_plant()
+            manifest['physics_revision'] += '+' + manifest['imu_link_plant_audit']['physics_fit']
         runner_type = OnPolicyRunner
         route_metrics = getattr(getattr(raw,'omni_route',None),'adjacent_metrics',None)
         if route_metrics is not None:
@@ -566,6 +683,8 @@ def main():
                     if not evaluating and course.get('precision_compare_budget')==[49,99] and locs['it']==49:
                         self.save(str(folder/'model_49.pt'))
                     route_metrics.log_rollout(self.writer,locs['it'])
+                    for key, value in getattr(self.alg, 'last_metrics', {}).items():
+                        self.writer.add_scalar('ABReference/'+key, value, locs['it'])
                     if hasattr(raw,'release_discount_counts'):
                         launches,protected=raw.release_discount_counts.tolist()
                         if launches:
@@ -593,6 +712,17 @@ def main():
                             self.writer.add_scalar('Travel/south_pair_release_speed_m_s',speed/launches,locs['it'])
             runner_type = AdjacentHopRunner
         runner=runner_type(wrapped,rc,log_dir=str(folder),device=args.device)
+        if args.ab_policy:
+            policy=runner.alg.policy
+            assert not runner.alg.optimizer.state and runner.current_learning_iteration==0
+            if args.ab_policy=='lstm':
+                from .packed_recurrent import use_packed_updates
+                use_packed_updates(policy.memory_a)
+                use_packed_updates(policy.memory_c)
+                manifest['recurrent_update_storage']='packed valid trajectory steps'
+            manifest['policy_parameters']=sum(p.numel() for p in policy.parameters() if p.requires_grad)
+            # Architecture construction consumes different random draws. Start rollouts at the same RNG seed.
+            torch.manual_seed(args.seed)
         if diagnostic or evaluating:
             checkpoint=args.checkpoint if evaluating else SOURCE
             runner.alg.policy.load_state_dict(torch.load(checkpoint,map_location=args.device,weights_only=False)['model_state_dict'],strict=True)
@@ -631,29 +761,98 @@ def main():
         elif not args.from_scratch:
             manifest['transfer']=transfer(runner.alg.policy,SOURCE)
             assert not runner.alg.optimizer.state and runner.current_learning_iteration==0
+        reference = course.get('ab_phase_reference')
+        if reference and args.mode == 'train':
+            from .ab_phase_reference import PhaseReferencePPO
+            if args.ab_policy or not args.initialize_from:
+                raise ValueError('AB phase reference training requires checkpoint initialization')
+            precision = (ROOT / course['omni']['initial_checkpoint']).resolve(strict=True)
+            recovery = (ROOT / reference['recovery_checkpoint']).resolve(strict=True)
+            runner.alg = PhaseReferencePPO(runner.alg, raw, reference, precision, recovery)
+            manifest['training_action_references'] = dict(precision=str(precision), recovery=str(recovery))
+            if guard := course.get('directional_actor_guard'):
+                from .directional_actor_guard import DirectionalActorGuard
+                bank = (ROOT / guard['bank']).resolve(strict=True)
+                runner.alg.direction_guard = DirectionalActorGuard(runner.alg.policy, bank, guard['budget_multiplier'])
+                manifest['directional_actor_guard'] = dict(bank=str(bank), budget_multiplier=guard['budget_multiplier'],
+                                                            actor_normalizer='frozen at V57')
+                if 'protect_feature_energy' in guard:
+                    manifest['directional_actor_guard'].update(
+                        runner.alg.direction_guard.protect_moving_features(
+                            guard['protect_feature_energy'], startup_fit=guard.get('fit_startup_commands', False)))
         manifest.update(status='running',gpu=torch.cuda.get_device_name(),simulation_started=True)
         write(folder/'manifest.json',manifest)
-        if obs_check:
+        if ab_check:
+            from .checks.ab_only_check import check_simulation
+            manifest['ab_check'] = check_simulation(raw,wrapped,runner)
+            manifest['optimizer_updates'] = 0
+            print('AB_SIMULATION_CHECK='+json.dumps(manifest['ab_check']),flush=True)
+        elif obs_check:
             from .checks.ring_obs73_check import runtime_check
             manifest['observation_check']=runtime_check(raw,wrapped,runner,folder)
             print('RING_OBS73_CHECK='+json.dumps(manifest['observation_check']),flush=True)
         elif evaluating:
+            if ab_policy:
+                # Match the initial noise stream across differently sized networks.
+                torch.manual_seed(args.seed)
+                manifest['rollout_noise_seed']=args.seed
             raw.evaluation.freeze_cases(folder)
+            if args.isolate_eval_reset_rng:
+                from .eval_reset_rng import PROTOCOL, isolate_post_quota_resets
+                manifest['evaluation_reset_rng'] = PROTOCOL
+                manifest['evaluation_reset_rng_audit'] = isolate_post_quota_resets(raw, args.seed)
+            yaw_evaluation = None
+            if yaw_prediction.get('all_phase_envelope') or args.audit_all_phase_yaw:
+                from .all_phase_yaw import YawEvaluation
+                yaw_evaluation = YawEvaluation(raw.num_envs, raw.device, yaw_prediction)
             policy=runner.get_inference_policy(device=args.device)
+            canonical = None
+            if args.canonical_axis:
+                from .axis_canonical_actor import AxisCanonicalActor
+                canonical = AxisCanonicalActor(policy, runner.alg.policy, raw.omni_route)
+                policy = canonical
+            if args.yaw_feedback:
+                from .yaw_thrust_feedback import apply_yaw_feedback
+                actor = policy
+                target_heading = yaw_prediction['target_heading_rad']
+
+                def policy(obs):
+                    measured = runner.alg.policy.get_actor_obs(obs)
+                    return apply_yaw_feedback(measured, actor(obs), target_heading_rad=target_heading)
             frozen_state={key:value.detach().clone() for key,value in runner.alg.policy.state_dict().items()}
             def forbid_update(*unused,**kwargs):raise RuntimeError('Evaluation forbids optimizer updates')
             runner.alg.optimizer.step=forbid_update
+            if preview:
+                from .ring_play import replay_evaluation_case
+                record=replay_evaluation_case(app,raw,wrapped,runner.alg.policy,policy,canonical,obs,args)
+                assert not runner.alg.optimizer.state and runner.current_learning_iteration==0
+                assert all(torch.equal(value,runner.alg.policy.state_dict()[key]) for key,value in frozen_state.items())
+                write(folder/'preview.json',record)
+                manifest.update(status='complete',optimizer_updates=0,preview_result=str(folder/'preview.json'))
+                print(f'OMNI_PREVIEW={folder/"preview.json"}',flush=True)
+                return
             with torch.inference_mode():
                 for step in range(raw.max_episode_length+1):
                     obs,_,done,_=wrapped.step(policy(obs))
+                    if yaw_evaluation is not None:
+                        yaw_evaluation.sample(raw._moving_phase_last_audit['yaw_prediction'], done)
                     runner.alg.policy.reset(done)
+                    if canonical is not None:
+                        canonical.reset(done)
                     if step%250==0:print(f'RING_EVAL_STEP={step} COMPLETE={len(raw.evaluation.rows)}/128',flush=True)
                     if all(raw.evaluation.finished):break
             assert not runner.alg.optimizer.state and runner.current_learning_iteration==0
             assert all(torch.equal(value,runner.alg.policy.state_dict()[key]) for key,value in frozen_state.items()),'Evaluation changed policy/normalizer state'
             manifest['optimizer_updates']=0
             result,rows=raw.evaluation.result()
-            if args.precision_suite in ('continuous','opposite_straight','ab_continue','ab_reverse'):
+            if course.get('omni', {}).get('ab_miss_recovery') and (args.precision_suite or args.waypoint_source):
+                from .metrics import same_target_recovery_metrics
+                result['same_target_recovery'] = same_target_recovery_metrics(rows, raw.landing_radius_m)
+            if args.waypoint_source:
+                result.update(case_version=evaluation_scope,evaluation_scope=evaluation_scope,
+                              waypoint_source=args.waypoint_source,
+                              promotion_gate=dict(scope=evaluation_scope,passed=False,diagnostic_only=True))
+            elif args.precision_suite in ('continuous','opposite_straight','ab_continue','ab_reverse'):
                 if args.precision_suite=='continuous':
                     from .precision_routes import continuous_score
                     result['continuous']=continuous_score(rows)
@@ -666,6 +865,19 @@ def main():
                 report['matched_failure_components']=matched_components(rows,report['first_failed_events'],args.seed)
                 result.update(seed=args.seed,evaluation_scope=evaluation_scope,precision10=report,
                               promotion_gate=dict(scope=evaluation_scope,passed=report['passed']))
+            if yaw_evaluation is not None:
+                result['all_phase_yaw'] = yaw_evaluation.report()
+                if yaw_prediction.get('all_phase_envelope'):
+                    yaw_pass = result['all_phase_yaw']['passed']
+                    result['promotion_gate']['all_phase_yaw_passed'] = yaw_pass
+                    result['promotion_gate']['passed'] &= yaw_pass
+                    if 'precision10' in result:
+                        result['precision10']['attitude'] &= yaw_pass
+                        result['precision10']['passed'] &= yaw_pass
+                    if 'stationary_retention_ready' in result:
+                        result['stationary_retention_ready'] &= yaw_pass
+            from .training_trend import checkpoint_trend
+            result['training_trend'] = checkpoint_trend(args.checkpoint)
             write(folder/'summary.json',result);write(folder/'episodes.json',rows)
             manifest.update(evaluation_summary=str(folder/'summary.json'),promotion_gate=result['promotion_gate'])
             result_keys=('counts','rates','failure_counts_overlapping','promotion_gate')
@@ -711,6 +923,8 @@ def main():
             select_course(trajectory,folder)
         else:
             runner.learn(num_learning_iterations=updates,init_at_random_ep_len=False)
+            if reference:
+                manifest['final_reference_metrics'] = runner.alg.last_metrics
             manifest.update(iteration=int(runner.current_learning_iteration),
                             full_crossings_total=float(raw.ring_success_total),strict_landing_total=float(raw.ring_joint_total))
             if min_loop or stage_b:manifest['loop_stage_completions']=raw.loop.completions.tolist()
@@ -733,6 +947,8 @@ def main():
                 manifest['stationary_flight_metrics']={k.replace('PostRing/','Stationary/'):float(v) for k,v in raw.stationary_stats.log().items()}
             if omni:
                 manifest['omni_totals']=dict(target_advances=int(raw.omni_route.advances),missed_landings=int(raw.omni_route.misses))
+                if hasattr(raw, 'opening_release'):
+                    manifest['ab_opening_release'] = {k:int(v) for k,v in raw.opening_release.metrics().items()}
                 if course.get('moving_navigation'):
                     manifest['omni_totals'].update(strict_target_advances=int(raw.omni_route.strict_advances),
                         navigation_advances_without_strict=int(raw.omni_route.advances_without_strict))
@@ -742,6 +958,11 @@ def main():
                 manifest['vertical_valid_landings']=float(raw.vertical_valid_landings)
                 if raw.jump_cycle is not None:
                     manifest['jump_cycle_apex_events']=int(raw.jump_cycle.apex_count)
+        robustness = getattr(raw, '_physical_robustness', None)
+        if robustness is not None:
+            audit = robustness.audit()
+            manifest['physical_robustness_audit'] = audit
+            print('PHYSICAL_ROBUSTNESS_AUDIT=' + json.dumps(audit), flush=True)
         manifest['status']='complete'
     except BaseException as exc:
         manifest.update(status='failed',error=str(exc),traceback=traceback.format_exc())

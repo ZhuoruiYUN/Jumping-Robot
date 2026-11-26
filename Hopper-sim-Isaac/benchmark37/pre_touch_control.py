@@ -74,8 +74,10 @@ def record_pre_touch_motor(env, pending):
         env._pretouch_max_motor_u, torch.where(mask, env._motor_u.abs(), 0.0).amax())
 
 
-def suppress_off_wrench(env):
+def suppress_off_wrench(env, additional_running=None):
     """The identified polynomial has F(0)>0; a truly stopped vehicle has no motor wrench."""
     stopped = env._release_pending & (env._motor_u.abs().amax(dim=-1) <= 1e-8)
+    if additional_running is not None:
+        stopped &= ~additional_running
     env._thrust[stopped] = 0.0
     env._moment[stopped] = 0.0
