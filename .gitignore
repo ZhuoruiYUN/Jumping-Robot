@@ -73,6 +73,8 @@ events.out.tfevents.*
 !Hopper-sim-Isaac/Quadhopper_PPO_Reference_SysID/model/HopperSysID.usda
 !Hopper-sim-Isaac/Quadhopper_PPO_Reference_SysID/model/quadhopper_memory_power.pt
 !Hopper-sim-Isaac/benchmark37/HopperCalibrated20261028.usda
+!Hopper-sim-Isaac/benchmark37/TGate_20mm.usda
+!Hopper-sim-Isaac/benchmark37/TGate_V88_preview.usda
 
 # Byte-exact historical stationary source assets restored from 46c31fd.
 !Hopper-sim-Isaac/Quadhopper_Stationary_SysID/_baseline/model/HopperAsset.usd
@@ -113,6 +115,7 @@ Hopper-sim-Isaac/outputs/
 Hopper-sim-Isaac/PATH_FREE_STAGE2*
 Hopper-sim-Isaac/CURRENT_CONTEXT*.md
 Hopper-sim-Isaac/*HANDOFF*.md
+Hopper-sim-Isaac/*HANDOFF*_CONFIG.json
 Hopper-sim-Isaac/*FINDINGS*.md
 
 # Generated Quadhopper figure sharing workspace; commit the zip package instead.

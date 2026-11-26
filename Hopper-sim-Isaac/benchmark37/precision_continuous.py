@@ -15,7 +15,8 @@ from .precision_impulse import contact_reference_evidence
 from .precision_trials import ROOT, SERIES, measured, rank, read, run, save
 
 
-HOME = SERIES/'continuous_v51'
+HOME = SERIES/'ab_only_v52'
+AB_COURSE = ROOT/'training_config_v51/ab_only/course.json'
 BASE = SERIES/'round_03'
 START = BASE/'train/model_49.pt'
 def worker_revision():
@@ -26,9 +27,9 @@ WORKER_REVISION=worker_revision()
 
 
 def proposal(parent, feedback, number, auxiliary):
-    course = read(parent.parent/'ring_config.json')
-    course.update(version='obs73_precision_continuous_v51',output_series=str(HOME.relative_to(ROOT/'outputs')),
-                  training_iterations=50)
+    course = read(parent.parent/'ring_config.json') if parent != START else read(AB_COURSE)
+    if not course['omni'].get('ab_pair_only'):
+        raise ValueError('AB worker needs an AB-only parent course after the initial transfer')
     course['omni']['initial_checkpoint']=str(parent)
     rng=random.Random(1051+number)
     terms={}
@@ -41,18 +42,11 @@ def proposal(parent, feedback, number, auxiliary):
         terms[name]={key:round(gain*value/max(counts.values()),4) for key,value in counts.items()}
     course['directional_landing']=terms
     short=feedback.get('matched_failure_components',{}).get('matched_pre_reversal_short',{})
-    if short.get('eligible',0)>=8:
-        course['omni']['reversal_rehearsal_fraction']=min(.65,.25+short['eligible']/80)
     if short.get('matched',0)>=8 and short['excess_cm'].get('release_speed',0.)>=2.:
-        course['precision_pre_reversal_release']=dict(allowance_m_s=.17,weight=rng.uniform(.8,1.8))
-    groups=feedback['groups']
-    bias=.36 if groups['straight']['clean']<=groups['omni']['clean'] else .20
-    course['omni']['ten_step_fraction']=rng.uniform(bias-.06,bias+.06)
+        course['precision_pre_reversal_release'].update(allowance_m_s=.17,weight=rng.uniform(.8,1.8))
     if (not feedback['attitude'] and number%3==0) or auxiliary=='stationary':
         for key in ('plane_peak','plane_lean','plane_leg_speed'):
             course['flight_plane_control'][key]=min(480.,course['flight_plane_control'][key]*rng.uniform(1.05,1.25))
-    if auxiliary=='keyboard':
-        course['guarded_keys']['training_moving_fraction']=.375
     return course
 
 
@@ -477,6 +471,9 @@ def main():
                 continue
             for request in sorted((HOME/'ab_pairs').glob('*/course.json')):
                 if not any((request.parent/name).exists() for name in ('result.json','error.json')):
+                    if not read(request)['omni'].get('ab_pair_only'):
+                        save(request.parent/'error.json',dict(error='Expected an AB-only training course'))
+                        continue
                     from .train_ab_pairs import service_trial
                     service_trial(request.parent)
             number=state['round']
@@ -513,21 +510,15 @@ def main():
                 previous=HOME/f'round_{number-1:05d}'
                 repair=None if state['extra'] else recovery_control(HOME,number,parent)
                 if repair is None:
-                    repair=distance_control(HOME,number,parent,state)
-                if repair is None:
                     repair=hold_peak_control(HOME,number,parent,state)
                 if repair is None:
                     repair=foot_bonus_control(HOME,number,parent,state)
-                if repair is None:
-                    repair=startup_control(HOME,number,parent,state)
                 if repair is None:
                     repair=release_window_control(HOME,number,parent,state)
                 if repair is None:
                     repair=release_tail_control(HOME,number,parent,state)
                 if repair is None:
                     repair=straight_descent_control(HOME,number,parent,state)
-                if repair is None:
-                    repair=rehearsal_balance_control(HOME,number,parent,state)
                 if repair is None:
                     repair=reversal_apex_control(HOME,number,parent,state)
                 if repair is None:
@@ -538,14 +529,6 @@ def main():
                     repair=forecast_control(previous,parent,state)
                 if repair:
                     course=repair
-                elif number%8==0 and not state['extra'] and (previous/'decision.json').exists():
-                    decision=read(previous/'decision.json')
-                    weights=heading_weights(feedback)
-                    if (weights and decision.get('mode')=='train' and not decision['accepted_as_parent']
-                            and decision['parent']==str(parent)):
-                        course=read(previous/'course.json')
-                        course['omni']['straight_heading_weights']=weights
-                        course['straight_heading_control']=str(previous)
                 course.pop('precision_compare_budget',None)
                 extended=extend_plateau(HOME,number,parent,state)
                 course['training_iterations']=100 if extended else 50
@@ -554,6 +537,8 @@ def main():
                 save(config,course)
             windows=read(config).get('precision_compare_budget') if not early else None
             if not early:
+                if not read(config)['omni'].get('ab_pair_only'):
+                    raise ValueError(f'Expected an AB-only training course in {config}')
                 persist(state,'training')
                 train=stage(folder,'train','train','--headless','--ring-config',config)
                 checkpoint=train/('model_99.pt' if windows else 'model_49.pt')

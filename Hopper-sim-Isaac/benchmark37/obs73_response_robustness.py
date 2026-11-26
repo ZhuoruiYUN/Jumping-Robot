@@ -17,9 +17,17 @@ class ResponseEnvelope:
         self.config = config
         self.evaluation = evaluation
         low, high = config['roll_pitch_gain_range']
+        self.training_gain_range = config.get('training_roll_pitch_gain_range', (low, high))
+        self.tail_fraction = config.get('training_tail_fraction_of_weaker', 0.)
+        training_low, training_high = self.training_gain_range
         if (not all(math.isfinite(x) for x in (low, high)) or not 0 < low < high <= 1
                 or config['nominal_fraction'] != .5):
             raise ValueError('Expected bounded weaker response and50% nominal episodes')
+        if not low <= training_low < training_high <= high:
+            raise ValueError('Training response range must lie within the evaluation envelope')
+        if (not math.isfinite(self.tail_fraction) or not 0. <= self.tail_fraction < 1.
+                or (self.tail_fraction and training_low == low)):
+            raise ValueError('Training response tail needs a fraction below one and an unused gain interval')
         self.gain = torch.ones(n, device=device)
         self.base_inertia = torch.ones(n, 3, device=device)
         self.rng = torch.Generator(device=device).manual_seed(int(seed)+731118)
@@ -51,13 +59,24 @@ class ResponseEnvelope:
         effective[:, :2] /= gains[:, None]
         inertia[ids] = effective
 
-    def reset(self, ids, inertia):
+    def reset(self, ids, inertia, full_range_lanes=None):
         if self.evaluation:
             gains = self.evaluation_gains(ids)
         else:
-            low, high = self.config['roll_pitch_gain_range']
-            gains = low+(high-low)*torch.rand(len(ids), generator=self.rng, device=self.gain.device)
-            nominal = torch.rand(len(ids), generator=self.rng, device=self.gain.device) < .5
+            low, high = self.training_gain_range
+            draw = torch.rand(len(ids), generator=self.rng, device=self.gain.device)
+            gains = low + (high - low) * draw
+            group_draw = torch.rand(len(ids), generator=self.rng, device=self.gain.device)
+            if self.tail_fraction:
+                evaluation_low = self.config['roll_pitch_gain_range'][0]
+                # Reserve part of the old weaker group for the uncovered gains.
+                # The conditional draw and all other gains retain their old values.
+                tail = (group_draw >= .5) & (group_draw < .5 + .5 * self.tail_fraction)
+                gains = torch.where(tail, evaluation_low + (low - evaluation_low) * draw, gains)
+            if full_range_lanes is not None:
+                full_low, full_high = self.config['roll_pitch_gain_range']
+                gains = torch.where(full_range_lanes, full_low + (full_high - full_low) * draw, gains)
+            nominal = group_draw < .5
             gains[nominal] = 1.
         # The base environment already resampled its original DR for these IDs.
         self.apply(ids, inertia, inertia[ids], gains)
@@ -86,6 +105,9 @@ class ResponseEnvelope:
                         response_group='nominal' if i < 64 else 'weaker')
 
     def log(self):
-        return {'Response/roll_pitch_gain_mean': self.gain.mean(),
-                'Response/roll_pitch_gain_min': self.gain.min(),
-                'Response/weaker_fraction': (self.gain < 1).float().mean()}
+        result = {'Response/roll_pitch_gain_mean': self.gain.mean(),
+                  'Response/roll_pitch_gain_min': self.gain.min(),
+                  'Response/weaker_fraction': (self.gain < 1).float().mean()}
+        if self.tail_fraction and not self.evaluation:
+            result['Response/below_core_gain_fraction'] = (self.gain < self.training_gain_range[0]).float().mean()
+        return result

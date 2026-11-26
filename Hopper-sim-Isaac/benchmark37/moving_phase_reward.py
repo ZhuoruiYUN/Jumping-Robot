@@ -1,12 +1,8 @@
-"""Task-only motion ablation: allow transport, stabilize the final approach.
-
-No policy controller, foot/hip actuator or new observation is introduced.
-Use ledger deltas to reweight the exact inherited rewards once, leaving
-stationary episodes and the first stationary hop byte-for-byte unchanged.
-"""
+"""Motion reward and optional flight-control extensions for the OBS73 hopper."""
 import math
 
 import torch
+from .all_phase_yaw import yaw_envelope_cost
 
 PHASE_COSTS=(
     'attitude_penalty','vertical_tilt','vertical_roll_pitch_rate',
@@ -60,7 +56,8 @@ def reward_deltas(ledger,moving,weight,tilt,dt,config,terminal_hold=None):
 
 def landing_guidance(foot_xy,clearance,velocity,root_height,target_xy,target_height,
                      phase,moving,valid,gravity,dt,config,remaining_time_floor=None,
-                     projection_xy=None,blend_mask=None,straight_precision_mask=None):
+                     projection_xy=None,blend_mask=None,straight_precision_mask=None,
+                     powered_clock=None, first_clock_cap=None):
     """Reward-only approximate ballistic guidance, never a motor/pose command.
 
     The clock is recomputed from current state, including missed-hop retries.
@@ -75,6 +72,15 @@ def landing_guidance(foot_xy,clearance,velocity,root_height,target_xy,target_hei
         min=config['minimum_time_s'],max=config['maximum_time_s'])
     if remaining_time_floor is not None:
         remaining=torch.maximum(remaining,remaining_time_floor).clamp(max=config['maximum_time_s'])
+    if powered_clock is not None:
+        from .imu_link_flight import bounded_clock
+        estimated_time, blend_weight, limit = powered_clock
+        remaining = bounded_clock(remaining, estimated_time, blend_weight,
+                                  config['minimum_time_s'], config['maximum_time_s'], limit)
+    if first_clock_cap is not None:
+        cap, strength = first_clock_cap
+        remaining = torch.lerp(remaining, torch.minimum(remaining, cap.clamp_min(config['minimum_time_s'])),
+                               strength)
     physical_clock_active=torch.zeros_like(phase,dtype=torch.bool)
     if config.get('projection_clock_version')=='zero_at_contact_separate_divisor_v2':
         # The150ms velocity denominator guard is not physical flight time.
@@ -115,6 +121,12 @@ def landing_guidance(foot_xy,clearance,velocity,root_height,target_xy,target_hei
             peak=(1.-(remaining-.25).abs()/.10).clamp(0.,1.)
             blend=torch.where(straight_precision_mask & descending,peak,0.)
             width=width+(config['landing_width_m']-width)*blend
+        if config.get('precision_to_contact'):
+            # As the measured foot takes over, tighten the spatial tolerance and
+            # retain guidance through descent. Score physical contact separately.
+            arrival = torch.where(descending & (clearance > 0.) & ~valid, blend, 0.)
+            width = width + (config['landing_width_m'] - width) * arrival
+            weight = torch.lerp(weight, torch.ones_like(weight), arrival)
         scaled=projected_error/width
         # Stable smooth-L1 form, including tiny errors: sqrt(1+x²)-1.
         shape=scaled.square()/(torch.sqrt(1+scaled.square())+1)
@@ -281,6 +293,14 @@ def heading_motion(q,omega):
     return heading,rate
 
 
+def yaw_contact_jump_cost(previous_spin, spin, previously_loaded, loaded, config):
+    """Charge once at spring engagement for a jump in spin about world vertical."""
+    excess = ((spin - previous_spin).abs() - config['free_rate_jump_rad_s']).clamp_min(0.)
+    quadratic = excess.clamp(max=1.)
+    cost = -config['weight'] * (quadratic.square() + 2. * (excess - quadratic))
+    return torch.where(loaded & ~previously_loaded, cost, 0.)
+
+
 def yaw_peak_increment(error,rate,previous,moving,horizon,limit_deg,weight):
     """Nonpositive increments of predicted peak excess within a bounce cycle.
 
@@ -369,6 +389,13 @@ def consistent_outgoing_velocity(foot_xy,clearance,velocity,current,next_goal,
     distance=(predicted-current).norm(dim=-1)
     offset = 1. if blend_after_gate else 0.
     position=(offset+(foot_limit_m-distance)/config['position_blend_width_m']).clamp(0.,1.)
+    near = config.get('near_touchdown_preview') if blend_after_gate else None
+    if near:
+        # The far preview is optimistic just outside the acceptance disk.
+        # As contact approaches, blend toward its measured short-horizon reliability.
+        close = (1. + (foot_limit_m - distance) / near['position_blend_width_m']).clamp(0., 1.)
+        blend = ((near['start_within_s'] - time) / (near['start_within_s'] - near['full_within_s'])).clamp(0., 1.)
+        position = torch.lerp(position, close, blend)
     orientation=(offset+(15.-torch.rad2deg(tilt))/config['tilt_blend_width_deg']).clamp(0.,1.)
     confidence=position*orientation
     destination=current+confidence[:,None]*(next_goal-current)
@@ -398,6 +425,60 @@ def contact_handoff_velocity_cost(plan, velocity, phase, spring_rate, clearance,
     if retry_weight != 1.:
         cost = torch.where(retry, retry_weight * cost, cost)
     return cost, turn, retry
+
+
+def retry_midflight_reference(foot_proxy_xy, velocity_xy, target_xy, elapsed, duration,
+                              eligible, radius, config):
+    """Acceleration reference from a live XY endpoint estimate, in world axes."""
+    remaining = (duration - elapsed).clamp_min(.01)
+    miss = target_xy - (foot_proxy_xy + velocity_xy * remaining[:, None])
+    distance = miss.norm(dim=-1)
+    # Aim for the acceptance disk. Limit requested acceleration at short time-to-go.
+    magnitude = (2. * (distance - radius).clamp_min(0.) / remaining.square()).clamp(
+        max=config['max_acceleration_m_s2'])
+    fraction = elapsed / duration.clamp_min(.01)
+    active = (eligible & (fraction >= config['start_fraction'])
+              & (fraction < config['end_fraction']) & (distance > radius))
+    acceleration = miss * (magnitude / distance.clamp_min(1.e-6))[:, None]
+    return torch.where(active[:, None], acceleration, 0.), active
+
+
+def safe_retry_cruise_residual(actual, reference, release_ok, q, omega, config, yaw_config):
+    """Discount only existing thrust along the correction while attitude permits it."""
+    horizon = yaw_config['response_horizon_s']
+    tilt = predicted_max_tilt(q, omega, horizon)
+    heading, rate = heading_motion(q, omega)
+    difference = heading - yaw_config['target_heading_rad']
+    error = torch.atan2(difference.sin(), difference.cos())
+    yaw = torch.maximum(error.abs(), (error + horizon * rate).abs())
+
+    def margin(angle, warning_deg, limit_deg):
+        return ((math.radians(limit_deg) - angle) / math.radians(limit_deg - warning_deg)).clamp(0., 1.)
+
+    tilt_margin = margin(tilt, config['tilt_warning_deg'], config['tilt_limit_deg'])
+    yaw_margin = margin(yaw, yaw_config['all_phase_envelope']['warning_deg'], yaw_config['peak_heading_goal_deg'])
+    headroom = torch.minimum(tilt_margin, yaw_margin)
+    magnitude = reference.norm(dim=-1)
+    direction = reference / magnitude.clamp_min(1.e-8)[:, None]
+    along = (actual * direction).sum(-1).clamp_min(0.)
+    discount = torch.minimum(along, magnitude) * headroom * release_ok
+    return actual - discount[:, None] * direction, discount, headroom
+
+
+def retry_capture_cost(velocity_xy, incoming_xy, target_xy_velocity, stance_age_s,
+                       stance_duration_s, released, active, q, omega, dt, config):
+    """Track the velocity transition while leaving room for a controlled landing lean."""
+    fraction = (stance_age_s / stance_duration_s.clamp_min(dt)).clamp(0., 1.)
+    fraction = torch.where(released, 1., fraction)
+    reference = torch.lerp(incoming_xy, target_xy_velocity, fraction[:, None])
+    speed_error = (velocity_xy - reference).norm(dim=-1) / config['velocity_width_m_s']
+    tilt = predicted_max_tilt(q, omega, config['tilt_horizon_s'])
+    tilt_excess = (tilt - math.radians(config['tilt_free_deg'])).clamp_min(0.)
+    angle_error = tilt_excess / math.radians(config['tilt_width_deg'])
+    # Smooth linear tails keep rare tumbles from dominating the value target.
+    def penalty(error, weight):
+        return torch.where(active, -dt * weight * (torch.hypot(torch.ones_like(error), error) - 1.), 0.)
+    return penalty(speed_error, config['velocity_weight']), penalty(angle_error, config['tilt_weight'])
 
 
 def touchdown_projection_origin(root,foot,spring,normal):
@@ -463,6 +544,11 @@ def wrap_env(base):
             self.precision_release = self.course.get('precision_pre_reversal_release')
             if self.precision_release:
                 self._episode_sums['precision_pre_reversal_release'] = torch.zeros(self.num_envs,device=self.device)
+                if self.precision_release.get('ab_opening_release'):
+                    if not self.course['omni'].get('ab_pair_only'):
+                        raise ValueError('Opening release requires the AB-only course')
+                    from .precision_release import OpeningReversalRelease
+                    self.opening_release = OpeningReversalRelease(self.num_envs, self.device)
                 if 'ascent_forecast_bias_m' in self.precision_release:
                     from .precision_release import ReversalShortfall
                     bias=self.precision_release['ascent_forecast_bias_m']
@@ -483,6 +569,11 @@ def wrap_env(base):
             if self.plane_cost:
                 for name in ('plane_lean','plane_rate','plane_leg_speed','hold_motor_balance'):
                     self._episode_sums[name] = torch.zeros(self.num_envs,device=self.device)
+                self.hold_attitude_config = self.plane_cost.get('hold_attitude')
+                if self.hold_attitude_config is not None:
+                    from .flight_plane import validate_hold_attitude
+                    validate_hold_attitude(self.hold_attitude_config, self.course['flight_plane_limits']['lean_peak_deg'])
+                    self._episode_sums['hold_attitude_excess'] = torch.zeros(self.num_envs, device=self.device)
                 # hold/move x (air samples, squared forbidden lean/rate/foot speed, max lean)
                 self.plane_totals = torch.zeros(self.num_envs,2,5,device=self.device)
                 if 'plane_peak' in self.plane_cost:
@@ -620,9 +711,79 @@ def wrap_env(base):
                     raise ValueError('Invalid isolated launch velocity response window')
             self.launch_direction_config=self.course.get('launch_direction_refinement')
             self.omni_handoff_config = self.course.get('omni_rebound_handoff')
+            self.retry_midflight = self.course.get('retry_midflight')
+            self.safe_assist = (self.retry_midflight or {}).get('safe_assist')
+            if self.safe_assist:
+                cfg = self.safe_assist
+                if not (0 < cfg['tilt_warning_deg'] < cfg['tilt_limit_deg'] <= 90
+                        and 0 < cfg['max_release_error_m_s'] < math.inf
+                        and self.course.get('moving_yaw_prediction', {}).get('all_phase_envelope')):
+                    raise ValueError('Safe retry assist requires a valid release and attitude envelope')
+                self.retry_release_ok = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+            self.compression_config = self.course.get('retry_compression')
+            if self.compression_config is not None:
+                from .retry_compression import RetryCompression
+                c = self.compression_config
+                if not (self.course['omni'].get('ab_pair_only') and self.course['omni'].get('ab_miss_recovery')
+                        and self.omni_handoff_config and self.launch_velocity_window_config
+                        and 0 < c['sweep_horizon_s'] <= self.omni_handoff_config['contact_window_s']
+                        and 1 <= c['vertical_impulse_ratio'] <= 2 and 0 < c['threshold_m_s'] < 1):
+                    raise ValueError('Invalid AB compression-braking course')
+                self.retry_compression = RetryCompression(self.num_envs, self.device, c['threshold_m_s'],
+                    self.launch_velocity_window_config['width_m'], self.rebound_config['launch_weight'])
+                self._episode_sums['retry_compression'] = torch.zeros(self.num_envs, device=self.device)
+            self.support_config = self.course.get('support_preview')
+            if self.support_config is not None:
+                from .support_preview import SupportPreview
+                cfg = self.support_config
+                if not (self.omni_handoff_config and 'continuation_max_angle_deg' in self.omni_handoff_config
+                        and self.launch_velocity_window_config and self.course['omni'].get('ab_miss_recovery')
+                        and 0 < cfg['start_s'] < cfg['end_s'] <= .2
+                        and 0 < cfg['support_time_s'] < .1 and 1 <= cfg['impulse_ratio'] <= 2
+                        and 0 < cfg['release_threshold_m_s'] < 1):
+                    raise ValueError('Invalid support preview configuration')
+                self.support_preview = SupportPreview(self.num_envs, self.device)
+                self._episode_sums['support_preview_release'] = torch.zeros(self.num_envs, device=self.device)
+            self.waypoint_events = self.course.get('waypoint_event_costs')
+            if self.waypoint_events is not None:
+                from .waypoint_event_costs import StraightFirstApex, WaypointOutcome
+                if not (self.safe_assist and self.directional_landing
+                        and 0 < self.waypoint_events['minimum_straight_step_m'] <= .5):
+                    raise ValueError('Waypoint event costs require straight landing and confirmed retry tracking')
+                self.straight_first_apex = StraightFirstApex(self.num_envs, self.device)
+                self.waypoint_outcome = WaypointOutcome(self.num_envs, self.device)
+                self.retry_entry_error = torch.zeros(self.num_envs, device=self.device)
+                for name in ('straight_first_apex_cross', 'retry_rebound_growth'):
+                    self._episode_sums[name] = torch.zeros(self.num_envs, device=self.device)
+            self.retry_capture = self.course.get('retry_capture')
+            if self.retry_midflight:
+                cfg = self.retry_midflight
+                if not (self.omni_handoff_config and self.course['omni'].get('ab_miss_recovery')
+                        and 0 < cfg['start_fraction'] < cfg['end_fraction'] < 1
+                        and 0 < cfg['max_acceleration_m_s2'] < abs(self.sim.cfg.gravity[2])):
+                    raise ValueError('Retry midflight feedback requires AB recovery and bounded acceleration')
+                self.retry_foot_offset = torch.zeros(self.num_envs, 2, device=self.device)
+            if self.retry_capture or self.retry_midflight:
+                self.retry_latched = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+            if self.retry_capture:
+                if not self.omni_handoff_config or not self.course['omni'].get('ab_miss_recovery'):
+                    raise ValueError('Retry capture requires confirmed waypoint recovery and rebound handoff')
+                for key in ('flight_window_s', 'tilt_horizon_s', 'tilt_free_deg', 'tilt_width_deg',
+                            'velocity_width_m_s', 'velocity_weight', 'tilt_weight'):
+                    if not math.isfinite(self.retry_capture[key]) or self.retry_capture[key] <= 0:
+                        raise ValueError(f'Invalid retry capture parameter {key}')
+                if not isinstance(self.retry_capture.get('require_free_ascent', False), bool):
+                    raise ValueError('Retry capture ascent gate must be boolean')
+                self.retry_contact_velocity = torch.zeros(self.num_envs, 2, device=self.device)
+                for name in ('retry_capture_velocity', 'retry_capture_tilt'):
+                    self._episode_sums[name] = torch.zeros(self.num_envs, device=self.device)
             self.adjust_continuation_approach = False
             if self.omni_handoff_config:
                 handoff = self.omni_handoff_config
+                near = handoff.get('near_touchdown_preview')
+                if near and not (0 < near['position_blend_width_m'] < handoff['position_blend_width_m']
+                                 and 0 < near['full_within_s'] < near['start_within_s']):
+                    raise ValueError('Invalid near-touchdown handoff preview')
                 self.continuation_foot_offset_fraction = handoff.get('continuation_foot_offset_fraction', 0.)
                 if 'long_continuation_impulse_m_s' in handoff:
                     speed=handoff['long_continuation_impulse_m_s']
@@ -733,6 +894,19 @@ def wrap_env(base):
                     self._episode_sums[name]=torch.zeros(self.num_envs,device=self.device)
                 self.body_rate_totals=torch.zeros(self.num_envs,9,device=self.device)
             self.yaw_prediction_config=self.course.get('moving_yaw_prediction')
+            self.all_phase_yaw = (self.yaw_prediction_config or {}).get('all_phase_envelope')
+            if self.all_phase_yaw is not None:
+                cfg = self.all_phase_yaw
+                if (not 0 < cfg['warning_deg'] < self.yaw_prediction_config['peak_heading_goal_deg']
+                        or not all(math.isfinite(cfg[k]) and cfg[k] > 0 for k in
+                                   ('heading_weight', 'forecast_excess_weight', 'body_z_rate_weight'))):
+                    raise ValueError('Invalid all-phase yaw envelope')
+                band = cfg.get('control_band')
+                if band is not None and not (
+                        0 < band['warning_deg'] < cfg['warning_deg']
+                        and math.isfinite(band['weight']) and band['weight'] > 0):
+                    raise ValueError('Invalid all-phase yaw control band')
+                self._episode_sums['all_phase_yaw'] = torch.zeros(self.num_envs, device=self.device)
             if self.yaw_prediction_config:
                 y=self.yaw_prediction_config
                 if (not 0<y['response_horizon_s']<=.3
@@ -759,6 +933,103 @@ def wrap_env(base):
                     raise ValueError('Invalid precontact impact alignment configuration')
                 self._episode_sums['moving_impact_alignment']=torch.zeros(self.num_envs,device=self.device)
             self.landing_guidance_config=self.course.get('moving_landing_guidance')
+            self.first_landing_cross_config = self.course.get('first_landing_cross_feedback')
+            self.signed_retry_rebound_config = self.course.get('signed_retry_rebound')
+            self.retry_rebound_tracking_config = self.course.get('retry_rebound_tracking')
+            if self.first_landing_cross_config is not None:
+                from .first_landing_cross_feedback import validate as validate_first_landing_cross
+                validate_first_landing_cross(self.first_landing_cross_config)
+                if not (self.landing_guidance_config and self.rebound_plan is not None
+                        and self.course['omni'].get('ab_pair_only')) or self.retry_midflight:
+                    raise ValueError('First-landing cross feedback requires AB rebound guidance without a cruise override')
+                self.first_cross_release_step = torch.full(
+                    (self.num_envs,), -1, dtype=torch.long, device=self.device)
+                self.first_cross_foot_offset = torch.zeros(self.num_envs, 2, device=self.device)
+                self.first_cross_pending_cost = torch.zeros_like(self.first_cross_foot_offset)
+                self._episode_sums['first_landing_cross'] = torch.zeros(self.num_envs, device=self.device)
+            if self.signed_retry_rebound_config is not None:
+                from .signed_retry_rebound import validate_signed_retry_rebound
+                validate_signed_retry_rebound(self.signed_retry_rebound_config)
+                if not self.omni_handoff_config or self.rebound_plan is None:
+                    raise ValueError('Signed retry rebound requires the landing handoff preview')
+            if self.retry_rebound_tracking_config is not None:
+                from .retry_rebound_tracking import validate as validate_retry_rebound_tracking
+                validate_retry_rebound_tracking(self.retry_rebound_tracking_config)
+                if not (self.signed_retry_rebound_config and self.course.get('imu_link_plant')
+                        and self.course['omni'].get('ab_miss_recovery')):
+                    raise ValueError('Rebound tracking requires signed AB recovery and the calibrated attitude plant')
+                self.rebound_tracking_axis = torch.zeros(self.num_envs, 2, device=self.device)
+                self.rebound_tracking_along = torch.zeros(self.num_envs, device=self.device)
+                self.rebound_tracking_prepared_step = torch.full(
+                    (self.num_envs,), -1, dtype=torch.long, device=self.device)
+                self.rebound_tracking_target = torch.full_like(self.rebound_tracking_prepared_step, -1)
+                self.rebound_tracking_in_support = torch.zeros(
+                    self.num_envs, dtype=torch.bool, device=self.device)
+            self.imu_link_flight_guidance = self.course.get('imu_link_flight_guidance')
+            if self.imu_link_flight_guidance is not None:
+                from .imu_link_flight import validate
+                validate(self.imu_link_flight_guidance)
+                if not (self.landing_guidance_config and self.course.get('imu_link_plant')
+                        and self.course.get('yaw_heading_servo') and self.course.get('rigid_body_randomization')
+                        and self.course['omni'].get('ab_pair_only')):
+                    raise ValueError('imu_link teaching requires the yaw-servo AB plant and landing guide')
+                self._episode_sums['imu_link_collective_guidance'] = torch.zeros(self.num_envs, device=self.device)
+            self.cross_rebound_control = self.course.get('cross_rebound_control')
+            self.apex_governor = self.course.get('apex_governor')
+            self.y_rebound_teaching = self.course.get('y_rebound_teaching')
+            self.first_ascent_teaching = self.course.get('first_ascent_teaching')
+            self.ws_transfer_teaching = self.course.get('ws_transfer_teaching')
+            self.ws_continuation_forecast = None
+            self.continuation_cruise = (self.ws_transfer_teaching or {}).get('continuation_cruise')
+            if self.ws_transfer_teaching is not None:
+                from .v81_ws_transfer import terms, validate as validate_ws_transfer
+                if (not self.imu_link_flight_guidance or self.first_landing_cross_config is None
+                        or self.cross_rebound_control or self.apex_governor):
+                    raise ValueError('WS references require the calibrated AB plant and unassisted actions')
+                validate_ws_transfer(self.ws_transfer_teaching)
+                for name in terms(self.ws_transfer_teaching):
+                    self._episode_sums[name] = torch.zeros(self.num_envs, device=self.device)
+            if self.cross_rebound_control is not None or self.apex_governor is not None:
+                if not self.imu_link_flight_guidance:
+                    raise ValueError('Flight-control constraints require the calibrated AB plant')
+            if self.cross_rebound_control is not None:
+                if self.rebound_plan is None:
+                    raise ValueError('Cross rebound control requires the measured rebound flight duration')
+                from .cross_rebound_control import validate as validate_cross_control
+                validate_cross_control(self.cross_rebound_control)
+            if self.y_rebound_teaching is not None:
+                if self.cross_rebound_control is None:
+                    raise ValueError('Y preimpact control requires the rebound controller')
+                if not 0. < self.y_rebound_teaching['cost_per_s'] <= 10.:
+                    raise ValueError('Invalid transverse rebound teaching cost')
+                self._episode_sums['y_rebound_prediction'] = torch.zeros(self.num_envs, device=self.device)
+            if self.apex_governor is not None:
+                from .apex_governor import validate as validate_apex_governor
+                validate_apex_governor(self.apex_governor)
+            if self.first_ascent_teaching is not None:
+                ascent = self.first_ascent_teaching
+                if (not self.apex_governor or self.rebound_plan is None
+                        or not .95 <= ascent['reference_flight_s'] <= 1.15
+                        or not 0. < ascent['cost_per_s'] <= 12.):
+                    raise ValueError('Invalid first landing ascent teaching configuration')
+                self._episode_sums['first_ascent_work'] = torch.zeros(self.num_envs, device=self.device)
+            self.overheight_band = self.course.get('overheight_band')
+            if (self.ws_transfer_teaching is not None and self.ws_transfer_teaching.get('retained_ascent_pulse')
+                    and self.overheight_band is None):
+                raise ValueError('Retained ascent pulse teaching requires the measured height band')
+            if self.overheight_band is not None:
+                band = self.overheight_band
+                if (not 1.03 <= band['upper_m'] <= 1.15 or not .005 <= band['soft_band_m'] <= .05
+                        or not 0. < band['cost_per_m'] <= 50.):
+                    raise ValueError('Invalid upper apex training band')
+                self._episode_sums['moving_overheight'] = torch.zeros(self.num_envs, device=self.device)
+            repeatability = self.course.get('hop_repeatability')
+            if repeatability is not None:
+                if not self.course['omni'].get('ab_pair_only') or not self.overheight_band:
+                    raise ValueError('Hop repeatability requires AB-only training and an apex band')
+                from .hop_repeatability import HopRepeatability
+                self.hop_repeatability = HopRepeatability(self.num_envs, self.device, repeatability)
+                self._episode_sums['ab_hop_repeatability'] = torch.zeros(self.num_envs, device=self.device)
             if self.landing_guidance_config:
                 c=self.landing_guidance_config
                 self.first_arrival_bonus=c.get('first_arrival_bonus',0.)
@@ -787,8 +1058,9 @@ def wrap_env(base):
                     self._episode_sums['moving_long_pair_along']=torch.zeros(self.num_envs,device=self.device)
                 if (self.first_arrival_bonus or self.center_arrival_bonus or self.long_pair_weight
                         or self.precision_streak_weight or self.adjacent_landing_weight or self.window_along_discount or c.get('straight_descent_precision')
+                        or self.imu_link_flight_guidance is not None or self.first_landing_cross_config is not None
                         or 'long_continuation_impulse_m_s' in (self.omni_handoff_config or {}) or hasattr(self,'reversal_apex')
-                        or hasattr(self,'reversal_shortfall')):
+                        or hasattr(self,'reversal_shortfall') or self.waypoint_events is not None):
                     self.last_attempted_target=torch.full((self.num_envs,),-1,dtype=torch.long,device=self.device)
                 if self.center_arrival_bonus:
                     self._episode_sums['moving_center_arrival']=torch.zeros(self.num_envs,device=self.device)
@@ -807,6 +1079,9 @@ def wrap_env(base):
                          or self.rebound_plan is None)):
                     raise ValueError('Reference touchdown projection requires rebound guidance')
                 blend_time=c.get('measured_foot_blend_s',0.)
+                if c.get('precision_to_contact') and (not blend_time or
+                        c.get('objective') != 'projected_touchdown_error_v1'):
+                    raise ValueError('Precision to contact requires measured-foot projected landing guidance')
                 if c.get('long_turn_blend_only') and not (blend_time and self.omni_handoff_config and self.long_pair_weight):
                     raise ValueError('Turn-only blending requires impact blending, handoff and first-attempt tracking')
                 if (not 0.<=blend_time<=c['maximum_time_s'] or
@@ -844,8 +1119,18 @@ def wrap_env(base):
                             ('weight','free_rate_rad_s','rate_width_rad_s'))):
                     raise ValueError('Invalid moving touchdown stability configuration')
                 self._episode_sums['moving_touchdown_rate']=torch.zeros(self.num_envs,device=self.device)
+            self.yaw_contact_jump_config = self.course.get('yaw_contact_jump')
+            if self.yaw_contact_jump_config is not None:
+                if any(not math.isfinite(self.yaw_contact_jump_config[key]) or self.yaw_contact_jump_config[key] <= 0
+                       for key in ('free_rate_jump_rad_s', 'weight')):
+                    raise ValueError('Invalid touchdown yaw-rate jump objective')
+                self.yaw_precontact_spin = torch.zeros(self.num_envs, device=self.device)
+                self.yaw_previously_loaded = torch.zeros_like(self.yaw_precontact_spin, dtype=torch.bool)
+                self._episode_sums['yaw_contact_jump'] = torch.zeros_like(self.yaw_precontact_spin)
 
         def _reset_idx(self,ids):
+            if hasattr(self, 'hop_repeatability'):
+                self.hop_repeatability.reset(slice(None) if ids is None else ids)
             super()._reset_idx(ids)
             if hasattr(self,'plane_totals'):
                 self.plane_totals[slice(None) if ids is None else ids] = 0.
@@ -859,6 +1144,17 @@ def wrap_env(base):
                 self.reversal_apex.reset(slice(None) if ids is None else ids)
             if hasattr(self,'reversal_shortfall'):
                 self.reversal_shortfall.reset(slice(None) if ids is None else ids)
+            if hasattr(self, 'first_cross_release_step'):
+                reset = slice(None) if ids is None else ids
+                self.first_cross_release_step[reset] = -1
+                self.first_cross_pending_cost[reset] = 0.
+            if hasattr(self, 'rebound_tracking_prepared_step'):
+                reset = slice(None) if ids is None else ids
+                self.rebound_tracking_prepared_step[reset] = -1
+                self.rebound_tracking_target[reset] = -1
+                self.rebound_tracking_in_support[reset] = False
+            if hasattr(self, 'opening_release'):
+                self.opening_release.reset(slice(None) if ids is None else ids)
             if hasattr(self,'south_pair'):
                 self.south_pair[slice(None) if ids is None else ids] = False
             if hasattr(self,'stop_after_move'):
@@ -874,14 +1170,203 @@ def wrap_env(base):
                     self.last_attempted_target.fill_(-1)
                 else:
                     self.last_attempted_target[ids]=-1
+            forecast = (getattr(self, 'ws_transfer_teaching', None) or {}).get('continuation_forecast')
+            if forecast is not None and not self.omni_route.evaluation:
+                if self.ws_continuation_forecast is None:
+                    from .v81_ws_transfer import ContinuationForecast
+                    self.ws_continuation_forecast = ContinuationForecast(self.num_envs, self.device, forecast)
+                else:
+                    self.ws_continuation_forecast.reset(slice(None) if ids is None else ids)
             if getattr(self,'rebound_plan',None) is not None:
                 ids=self._robot._ALL_INDICES if ids is None else ids
+                if hasattr(self, 'retry_compression'):
+                    self.retry_compression.reset(ids)
+                if hasattr(self, 'support_preview'):
+                    self.support_preview.reset(ids)
                 self.rebound_plan.reset(ids,self.omni_route.evaluation)
+                if hasattr(self, 'retry_latched'):
+                    self.retry_latched[ids] = False
+                if hasattr(self, 'straight_first_apex'):
+                    self.straight_first_apex.reset(ids)
+                    self.waypoint_outcome.reset(ids)
+                    self.retry_entry_error[ids] = 0.
+                if hasattr(self, 'retry_release_ok'):
+                    self.retry_release_ok[ids] = False
+                if hasattr(self, 'retry_contact_velocity'):
+                    self.retry_contact_velocity[ids] = 0.
+                if hasattr(self, 'retry_foot_offset'):
+                    self.retry_foot_offset[ids] = 0.
                 if hasattr(self,'carry_sample_step'):
                     self.carry_sample_step[ids]=-2
                 self.body_rate_totals[ids]=0.
 
+        def _current_route_edge(self):
+            route = self.omni_route
+            rows, index = self._robot._ALL_INDICES, route.index
+            return route.points[rows, index] - route.points[rows, (index - 1).clamp_min(0)]
+
+        def _ab_repeatability_cost(self, valid, physical, tilt):
+            from .hop_repeatability import straight_pair
+
+            data, route, track = self._robot.data, self.omni_route, self._foot_event
+            ab = route.ab_pairs
+            rows, a = self._robot._ALL_INDICES, ab.a_index
+            start, first, following = (route.points[rows, a + offset] for offset in (-1, 0, 1))
+            a_edge, b_edge = first - start, following - first
+            straight = ab.mask & straight_pair(a_edge, b_edge)
+            record = straight & (route.index == a) & ~ab.seen_a
+            compare = straight & (route.index == a + 1) & ab.hit_a
+            if ab.recovery is not None:
+                compare &= ab.recovery.active == ab.recovery.CONTINUE
+            spring = data.joint_pos[:, self._spring_joint_id]
+            vertical_speed = data.root_com_lin_vel_w[:, 2]
+            launch = (track.phase == track.GROUND) & (spring <= .001) & (vertical_speed > 0.) & ~physical
+            in_air = (track.phase == track.CANDIDATE) | (track.phase == track.FLIGHT)
+            height = data.root_link_pos_w[:, 2] - self._terrain.env_origins[:, 2]
+            apex = torch.maximum(track.peak - self._terrain.env_origins[:, 2], height)
+            error = (data.body_link_pos_w[:, self._foot_body_id, :2] - self._two_ground_pt_xy_w).norm(dim=-1)
+            clean_a = (record & valid & (error <= self.landing_radius_m) & (tilt <= math.radians(15.))
+                       & (apex >= 1.) & (apex <= self.overheight_band['upper_m']))
+            return self.hop_repeatability.step(
+                height, track.air_steps * self.step_dt, data.root_quat_w, data.root_ang_vel_b,
+                data.root_link_lin_vel_w[:, :2], torch.where(record[:, None], a_edge, b_edge),
+                launch, in_air & ~physical & (spring <= .002), (spring > .002) | physical, clean_a, record, compare)
+
+        def _apply_cross_rebound_control(self, actions, clearance, up):
+            from .cross_rebound_control import correct_cross_rebound
+
+            route, data = self.omni_route, self._robot.data
+            goal, following = self._two_ground_pt_xy_w, self._two_ground_pt1_xy_w
+            edge = self._current_route_edge()
+            next_edge = following - goal
+            axis = torch.nn.functional.normalize(edge, dim=-1)
+            cross = torch.stack((-axis[:, 1], axis[:, 0]), dim=-1)
+            next_distance = next_edge.norm(dim=-1)
+            collinear = (next_edge * axis).sum(-1).abs() >= .97 * next_distance
+            eligible = ~route.stationary_mask & (route.index > 0) & (edge.norm(dim=-1) > .10) & collinear
+            guard = getattr(self, 'key_guard', None)
+            if guard is not None:
+                eligible &= ~guard.mask
+
+            foot = data.body_link_pos_w[:, self._foot_body_id, :2]
+            velocity = data.root_link_lin_vel_w
+            gravity = abs(self.sim.cfg.gravity[2])
+            landing_speed = (velocity[:, 2].square() + 2. * gravity * clearance.clamp_min(0.)).sqrt()
+            time_to_touch = 2. * clearance.clamp_min(0.) / (landing_speed + velocity[:, 2].abs()).clamp_min(1.e-6)
+            # Collinear next targets have the same transverse coordinate, whether
+            # the real touchdown advances the queue or retains the current target.
+            predicted_foot = foot + velocity[:, :2] * time_to_touch[:, None]
+            outgoing_cross = ((goal - predicted_foot) * cross).sum(-1) / self.rebound_plan.flight.clamp_min(.5)
+            incoming_cross = (velocity[:, :2] * cross).sum(-1)
+            vertical_rebound = landing_speed + 2.7
+            desired_lean = torch.atan2(outgoing_cross.clamp(-.25, .25) - incoming_cross,
+                                      vertical_rebound).clamp(-math.radians(7.), math.radians(7.))
+            phase = self._foot_event.phase
+            free_descent = ((phase == 2) | (phase == 3)) & (velocity[:, 2] < 0.) & (clearance > 0.)
+            timing = self._imu_link_plant.parameters[self._imu_link_plant.profile]
+            lead = timing[:, 7] * self.step_dt + 2. * timing[:, 6]
+            ramp = ((lead + .12 - time_to_touch) / .12).clamp(0., 1.)
+            upright = ((up - math.cos(math.radians(24.))) / .06).clamp(0., 1.)
+            gate = ramp * upright * eligible * free_descent
+            if self.y_rebound_teaching is not None and not route.evaluation:
+                y_handoff = ((axis[:, 1].abs() >= .966) & (next_distance >= .25)
+                             & ((next_edge * axis).sum(-1) >= .99 * next_distance))
+                from .ring_geometry import rotate
+                unit_z = torch.zeros_like(data.root_ang_vel_b)
+                unit_z[:, 2] = 1.
+                body_up = rotate(data.root_quat_w, unit_z)
+                cross_sine = (body_up[:, :2] * cross).sum(-1).clamp(-.99, .99)
+                up_dot = torch.cross(data.root_ang_vel_w, body_up, dim=-1)
+                cross_rate = (up_dot[:, :2] * cross).sum(-1) / (1. - cross_sine.square()).sqrt()
+                impact_lean = (cross_sine.asin() + time_to_touch.clamp_max(.10) * cross_rate).clamp(-.35, .35)
+                release_error = incoming_cross + vertical_rebound * impact_lean.tan() - outgoing_cross.clamp(-.25, .25)
+                residual = ((release_error.abs() - .07) / .22).clamp(0., 1.)
+                self._y_rebound_prediction_cost = (-self.y_rebound_teaching['cost_per_s'] * self.step_dt
+                                                    * gate * y_handoff * residual.square())
+            actions, cross_lean, force = correct_cross_rebound(
+                actions, data.root_quat_w, data.root_ang_vel_b, cross, desired_lean, gate,
+                self.cross_rebound_control)
+            self._cross_rebound_control_audit = (gate, cross_lean, desired_lean, force)
+            return actions
+
+        def _record_first_ascent_cost(self, actions, height, vz, up, weight, drag):
+            from .ascent_coast_preview import queued_coast
+            from .imu_link_flight import NOMINAL_MASS_KG
+
+            plant = self._imu_link_plant
+            first = (self.last_attempted_target != self.omni_route.index) & (self._current_route_edge().norm(dim=-1) >= .35)
+            ids = (first & (weight > 0.) & (height >= .72) & (vz > .28) & (up > .955)).nonzero().flatten()
+            self._first_ascent_work_cost = torch.zeros_like(weight)
+            if not len(ids):
+                return
+            timing = plant.parameters[plant.profile[ids], :2]
+            args = (height[ids], vz[ids], up[ids], NOMINAL_MASS_KG * plant.mass_scale[ids],
+                    drag[ids], plant.collective_scale[ids], plant.voltage_gain[ids], plant.collective_u[ids],
+                    torch.stack(tuple(plant.history), dim=1)[ids], timing[:, 0], timing[:, 1], self.step_dt)
+            floor, _ = queued_coast(*args)
+            predicted_peak, _ = queued_coast(*args, candidate_duty=.5 * (actions[ids] + 1.))
+            # Debit only the height increment attributable to new powered
+            # ascent. Stored spring and already queued motor work set the floor.
+            excess = (predicted_peak - floor.clamp_min(1.10)).clamp_min(0.)
+            reach = ((floor - 1.005) / .025).clamp(0., 1.)
+            self._first_ascent_work_cost[ids] = (-self.first_ascent_teaching['cost_per_s'] * self.step_dt
+                * reach * (excess / .05).clamp_max(1.).square() * weight[ids])
+
         def _pre_physics_step(self,actions):
+            if getattr(self, 'imu_link_flight_guidance', None) is not None:
+                from .imu_link_flight import NOMINAL_MASS_KG, collective_reference, sample_ascent
+                config = self.imu_link_flight_guidance
+                # Entry points without a runner manifest install the same plant
+                # at their first control tick, after reset and case restoration.
+                if not hasattr(self, '_imu_link_plant'):
+                    self.install_imu_link_plant()
+                plant = self._imu_link_plant
+                data = self._robot.data
+                clearance = data.body_link_pos_w[:, self._foot_body_id, 2] - self._terrain.env_origins[:, 2] - .012
+                height, up, thrust, apex, _, landing_time, weight = sample_ascent(self, config, clearance)
+                if self.ws_transfer_teaching is not None and not self.omni_route.evaluation:
+                    from .v81_ws_transfer import references
+                    self._ws_teaching_costs, self._ws_teaching_audit = references(
+                        self, actions, clearance, height, up, landing_time)
+                if self.cross_rebound_control or self.apex_governor:
+                    self._flight_control_input = actions
+                if self.cross_rebound_control:
+                    actions = self._apply_cross_rebound_control(actions, clearance, up)
+                if self.apex_governor:
+                    from .apex_governor import limit_ascent_collective, projected_landing_margin
+                    from .calibration_20261028 import PARAMS
+                    vz = data.root_link_lin_vel_w[:, 2]
+                    drag = (PARAMS['air']['ascending_quadratic_Ns2_m2_whole']
+                            * plant.parameters[plant.profile, 3])
+                    landing_margin = None
+                    if self.apex_governor.get('protect_landing'):
+                        gravity = abs(self.sim.cfg.gravity[2])
+                        ballistic_time = (vz + (vz.square() + 2. * gravity * clearance.clamp_min(0.)).sqrt()) / gravity
+                        foot_offset = data.body_link_pos_w[:, self._foot_body_id, :2] - self._two_ground_pt_xy_w
+                        landing_margin = projected_landing_margin(
+                            self._current_route_edge(), foot_offset, data.root_link_lin_vel_w[:, :2],
+                            torch.minimum(landing_time, ballistic_time))
+                    actions, coast_apex, trimmed = limit_ascent_collective(
+                        actions, height, vz, up, weight, NOMINAL_MASS_KG * plant.mass_scale,
+                        plant.collective_scale, plant.voltage_gain, self.apex_governor,
+                        ascent_drag_n_s2_m2=drag, landing_margin=landing_margin, applied_thrust=thrust)
+                    if self.first_ascent_teaching is not None and not self.omni_route.evaluation:
+                        self._record_first_ascent_cost(actions, height, vz, up, weight, drag)
+                    self._apex_governor_audit = (weight, coast_apex, trimmed)
+                target = self._desired_pos_w[:, 2] - self._terrain.env_origins[:, 2]
+                yaw, rate = heading_motion(data.root_quat_w, data.root_ang_vel_b)
+                y = self.yaw_prediction_config
+                yaw -= y['target_heading_rad']
+                forecast = yaw + y['response_horizon_s'] * rate
+                self._imu_link_collective_reference = collective_reference(
+                    apex, target, height, weight, up, torch.atan2(yaw.sin(), yaw.cos()),
+                    torch.atan2(forecast.sin(), forecast.cos()), .5 * (self._actions + 1.),
+                    plant.collective_u, thrust, plant.collective_scale, plant.voltage_gain, config)
+            if getattr(self, 'yaw_contact_jump_config', None) is not None:
+                from .ring_geometry import rotate
+                d = self._robot.data
+                self.yaw_precontact_spin.copy_(rotate(d.root_quat_w, d.root_ang_vel_b)[:, 2])
+                self.yaw_previously_loaded.copy_(d.joint_pos[:, self._spring_joint_id] > .002)
             if getattr(self,'stop_config',None) and not self.omni_route.evaluation:
                 ids = self.stop_impulse_pending.nonzero().flatten()
                 if len(ids):
@@ -939,6 +1424,13 @@ def wrap_env(base):
                 work_extension_audit=dict(eligible=eligible,rate=rate,gate=gate,extra_weight=extra)
             tilt=torch.acos((1-2*d.root_quat_w[:,1:3].square().sum(-1)).clamp(-1,1))
             guidance={};guidance_audit=None
+            if not route.evaluation:
+                if self.y_rebound_teaching is not None:
+                    guidance['y_rebound_prediction'] = self._y_rebound_prediction_cost
+                if self.first_ascent_teaching is not None:
+                    guidance['first_ascent_work'] = self._first_ascent_work_cost
+                if self.ws_transfer_teaching is not None:
+                    guidance.update(self._ws_teaching_costs)
             if self.plane_cost:
                 from .flight_plane import flight_plane_errors
                 edge = current - previous
@@ -970,6 +1462,21 @@ def wrap_env(base):
                 motor = self._motor_u
                 imbalance = (motor - motor.mean(dim=1,keepdim=True)).square().mean(1)
                 guidance['hold_motor_balance'] = -cfg['hold_motor_balance']*torch.where(hold,imbalance,0.)*self.step_dt
+                if self.hold_attitude_config is not None:
+                    from .flight_plane import hold_attitude_cost
+                    cost, predicted = hold_attitude_cost(
+                        up, d.root_ang_vel_w, lean, hold, air, self.step_dt, self.hold_attitude_config)
+                    guidance['hold_attitude_excess'] = cost
+                    hold_air, hold_support = hold & air, hold & ~air
+                    self.extras.setdefault('log',{}).update({
+                        'Hold/attitude_active_fraction':hold.float().mean(),
+                        'Hold/attitude_air_active_fraction':hold_air.float().mean(),
+                        'Hold/attitude_support_active_fraction':hold_support.float().mean(),
+                        'Hold/attitude_excess_cost':cost.mean(),
+                        'Hold/air_tilt_peak_deg':torch.where(hold_air, lean, 0.).max().rad2deg(),
+                        'Hold/support_tilt_peak_deg':torch.where(hold_support, lean, 0.).max().rad2deg(),
+                        'Hold/predicted_tilt_peak_deg':predicted.max().rad2deg(),
+                    })
                 for column,mask in enumerate((air & ~nonzero, air & nonzero)):
                     totals = self.plane_totals[:,column]
                     for j,val in enumerate((torch.ones_like(lean),lean.square(),rate.square(),swing.square())):
@@ -997,6 +1504,7 @@ def wrap_env(base):
                     d.joint_vel[:,self._spring_joint_id],clearance,moving,
                     self.moving_phase_config['free_tilt_deg'],self.step_dt,self.rotation_prediction_config)
             rebound_audit=None;time_floor=None;launch=None;old_index=i.clone()
+            first_cross_audit = retry_rebound_audit = tracking_audit = None
             if self.rebound_plan is not None:
                 p=self.rebound_plan;r=self.rebound_config;spring=d.joint_pos[:,self._spring_joint_id]
                 free=((f.phase==2)|(f.phase==3))&(spring<=.001)&(d.joint_vel[:,self._spring_joint_id].abs()<=.05)&(clearance>0)&~physical
@@ -1020,6 +1528,8 @@ def wrap_env(base):
                 normal,_=rebound_approach(d.root_link_pos_w,d.body_link_pos_w[:,self._foot_body_id],
                     d.root_link_lin_vel_w,outgoing,p.stance,r)
                 approach_normal = normal
+                actual = d.root_link_pos_w - d.body_link_pos_w[:, self._foot_body_id]
+                actual = actual / actual.norm(dim=-1, keepdim=True).clamp_min(1.e-6)
                 if self.omni_handoff_config:
                     handoff = self.omni_handoff_config
                     current_edge = current - previous
@@ -1062,6 +1572,50 @@ def wrap_env(base):
                             ref=torch.where(selected[:,None],impulse_normal,ref)
                         previous_approach=approach_normal
                         approach_normal=torch.where(continuing[:,None],ref,approach_normal)
+                    if self.signed_retry_rebound_config is not None:
+                        from .signed_retry_rebound import signed_retry_rebound
+                        eligible = prep_active & nonzero
+                        ab = getattr(route, 'ab_pairs', None)
+                        if ab is not None and not route.evaluation:
+                            # A scheduled retry can retain a missed A. On the
+                            # second jump only same-point retries are eligible,
+                            # to practice their approach without adding a third hop.
+                            recovery = ab.recovery
+                            if recovery is None:
+                                eligible = torch.zeros_like(eligible)
+                            else:
+                                retry_a = ~ab.seen_a & (recovery.assignment == recovery.RETRY)
+                                retry_b = ab.seen_a & (recovery.active == recovery.RETRY)
+                                eligible &= (old_index == ab.a_index) & (retry_a | retry_b)
+                        if guard is not None:
+                            eligible &= ~guard.mask
+                        nominal_approach = approach_normal
+                        forecast_error = forecast - self._two_ground_pt_xy_w
+                        approach_normal, retry_rebound_audit = signed_retry_rebound(
+                            nominal_approach, current_edge, forecast_error,
+                            d.root_link_lin_vel_w, clearance, p.flight, eligible, self.landing_radius_m,
+                            abs(self.sim.cfg.gravity[2]), r['touchdown_tilt_limit_deg'],
+                            self.signed_retry_rebound_config)
+                        if self.retry_rebound_tracking_config is not None:
+                            from .retry_rebound_tracking import tracked_rebound_reference
+                            from .ring_geometry import rotate
+                            plant = self._imu_link_plant
+                            timing = plant.parameters[plant.profile, 6:8]
+                            tracking_eligible = eligible
+                            if route.evaluation:
+                                tracking_eligible = eligible & (self.last_attempted_target == old_index)
+                            approach_normal, tracking_audit = tracked_rebound_reference(
+                                nominal_approach, approach_normal, current_edge, forecast_error,
+                                d.root_link_lin_vel_w, clearance, p.flight, tracking_eligible, actual,
+                                rotate(d.root_quat_w, d.root_ang_vel_b), self.step_dt,
+                                timing[:, 0], timing[:, 1], self.landing_radius_m,
+                                abs(self.sim.cfg.gravity[2]), r['touchdown_tilt_limit_deg'],
+                                self.signed_retry_rebound_config, self.retry_rebound_tracking_config)
+                            prepared = tracking_audit['active']
+                            self.rebound_tracking_axis[prepared] = tracking_audit['axis'][prepared]
+                            self.rebound_tracking_along[prepared] = tracking_audit['reference_along'][prepared]
+                            self.rebound_tracking_prepared_step[prepared] = self.common_step_counter
+                            self.rebound_tracking_target[prepared] = old_index[prepared]
                     handoff_cost, turn_unloading, retry_unloading = contact_handoff_velocity_cost(
                         p, d.root_link_lin_vel_w, f.phase, d.joint_vel[:, self._spring_joint_id],
                         clearance, moving, self.common_step_counter, self.step_dt,
@@ -1105,8 +1659,6 @@ def wrap_env(base):
                     p.prepared_normal[prep_active]=normal[prep_active]
                     p.incoming_velocity[prep_active]=d.root_link_lin_vel_w[prep_active]
                     p.incoming_valid[prep_active]=True
-                actual=d.root_link_pos_w-d.body_link_pos_w[:,self._foot_body_id]
-                actual=actual/actual.norm(dim=-1,keepdim=True).clamp(min=1e-6)
                 if getattr(self,'approach_cross_weight',0.):
                     # Approximate release velocity if the current leg orientation
                     # persists until impact. Only its transverse component matched
@@ -1123,8 +1675,31 @@ def wrap_env(base):
                     guidance['moving_approach_cross_velocity']=launch_velocity_cost(
                         cross,torch.zeros_like(cross),p.flight,continuing,self.approach_cross_weight,
                         self.launch_velocity_window_config)*ramp*self.step_dt
-                guidance['moving_rebound_approach']=-r['approach_weight']*(actual-approach_normal).square().sum(-1)*prep*self.step_dt
+                approach_error = (actual - approach_normal).square().sum(-1)
+                if tracking_audit is not None:
+                    measured_along = (actual[:, :2] * tracking_audit['axis']).sum(-1)
+                    reference_along = tracking_audit['reference_along']
+                    present_error = (measured_along - reference_along).clamp_min(0.).square()
+                    support_error = (tracking_audit['projected_support_along'] - reference_along).clamp_min(0.).square()
+                    # Charge the additional outward rotation that a delayed
+                    # command would otherwise carry into loaded contact.
+                    approach_error += tracking_audit['weight'] * (support_error - present_error).clamp_min(0.)
+                guidance['moving_rebound_approach'] = -r['approach_weight'] * approach_error * prep * self.step_dt
                 launch=moving&p.pending&free&(d.root_link_lin_vel_w[:,2]>0)
+                if self.support_config is not None:
+                    from .support_preview import predict_support_velocity
+                    support = self.support_config
+                    velocity = d.root_link_lin_vel_w
+                    leg = d.root_link_pos_w - d.body_link_pos_w[:, self._foot_body_id]
+                    predicted, clock = predict_support_velocity(
+                        leg, d.root_quat_w, d.root_ang_vel_b, velocity, clearance,
+                        abs(self.sim.cfg.gravity[2]), support['impulse_ratio'], support['support_time_s'])
+                    preview_sample = (prep_active & (clock >= support['start_s']) & (clock <= support['end_s'])
+                                      & (tilt <= math.radians(15.)))
+                    self.support_preview.sample(preview_sample, predicted)
+                    preview_budget = self.support_preview.release(
+                        launch, velocity[:, :2], p.velocity, p.flight, support['release_threshold_m_s'],
+                        self.launch_velocity_window_config['width_m'], r['launch_weight'])
                 if self.precision_release:
                     from .precision_release import pre_reversal_loss
                     eligible=launch if guard is None else launch & ~guard.mask
@@ -1146,6 +1721,15 @@ def wrap_env(base):
                     guidance['precision_pre_reversal_release']=pre_reversal_loss(
                         current-previous,self._two_ground_pt1_xy_w-self._two_ground_pt_xy_w,
                         d.root_link_lin_vel_w[:,:2],p.velocity,p.flight,eligible,self.precision_release)
+                    if hasattr(self, 'opening_release') and not route.evaluation:
+                        at_a = old_index == route.ab_pairs.a_index
+                        drop_contact = at_a & (f.phase == f.DROP) & (spring > .002) & ~physical
+                        ascent = at_a & moving & free & (d.root_link_lin_vel_w[:, 2] > 0)
+                        guidance['precision_pre_reversal_release'] += self.opening_release.step(
+                            drop_contact, ascent, d.body_link_pos_w[:, self._foot_body_id, :2],
+                            self._two_ground_pt_xy_w, current - previous,
+                            self._two_ground_pt1_xy_w - self._two_ground_pt_xy_w, d.root_link_lin_vel_w[:, :2],
+                            p.flight, self.landing_guidance_config['speed_limit_m_s'], self.precision_release)
                 if guard is not None and guard.pair_gap:
                     guard.observe_free_liftoff(launch)
                 if getattr(self,'south_release',None):
@@ -1172,7 +1756,24 @@ def wrap_env(base):
                         deficit[:,None],torch.zeros_like(deficit[:,None]),p.flight,
                         eligible & (floor>0.),self.release_carry_weight,self.launch_velocity_window_config)
                 p.launch_step[launch]=self.common_step_counter
+                if self.retry_capture:
+                    stance_age = (self.common_step_counter - p.contact_step) * self.step_dt
+                    release_age = (self.common_step_counter - p.launch_step) * self.step_dt
+                    released = p.launch_step >= 0
+                    stance = p.pending & ~released & (stance_age > 0.) & (
+                        stance_age <= self.omni_handoff_config['contact_window_s'])
+                    early_air = released & (release_age < self.retry_capture['flight_window_s'])
+                    if self.retry_capture.get('require_free_ascent', False):
+                        early_air &= free & (d.root_link_lin_vel_w[:, 2] > 0.)
+                    capture_active = self.retry_latched & moving & (stance | early_air)
+                    guidance['retry_capture_velocity'], guidance['retry_capture_tilt'] = retry_capture_cost(
+                        d.root_link_lin_vel_w[:, :2], self.retry_contact_velocity, p.velocity,
+                        stance_age, p.stance, released, capture_active, d.root_quat_w,
+                        d.root_ang_vel_b, self.step_dt, self.retry_capture)
                 error=(d.root_link_lin_vel_w[:,:2]-p.velocity).square().sum(-1)
+                ab = getattr(route, 'ab_pairs', None)
+                if ab is not None and ab.recovery is not None:
+                    ab.recovery.record_release(launch, error.sqrt())
                 if self.omni_handoff_config and self.retry_launch_tail_weight:
                     # 0.35 m/s was the 90th percentile of release error on low-speed
                     # recoveries that landed within 10 cm in the matched control.
@@ -1270,8 +1871,66 @@ def wrap_env(base):
                 t[:,5]+=(air&(xy>.6)).float()*self.step_dt
                 t[:,6]+=launch.float();t[:,7]+=torch.where(launch,xy.square(),0.)
                 t[:,8]=torch.maximum(t[:,8],torch.where(launch,xy,0.))
+                acceleration = force / r['nominal_mass_kg']
+                if self.retry_midflight:
+                    foot_xy = d.body_link_pos_w[:, self._foot_body_id, :2]
+                    root_xy = d.root_link_pos_w[:, :2]
+                    self.retry_foot_offset[launch] = foot_xy[launch] - root_xy[launch]
+                    ref_acceleration, correcting = retry_midflight_reference(
+                        root_xy + self.retry_foot_offset, d.root_link_lin_vel_w[:, :2],
+                        self._two_ground_pt_xy_w, (self.common_step_counter-p.launch_step)*self.step_dt,
+                        p.flight, air & self.retry_latched & (p.launch_step >= 0), self.landing_radius_m,
+                        self.retry_midflight)
+                    if self.safe_assist:
+                        self.retry_release_ok[launch] = error[launch] <= self.safe_assist['max_release_error_m_s'] ** 2
+                        acceleration, discount, headroom = safe_retry_cruise_residual(
+                            acceleration, ref_acceleration, self.retry_release_ok, d.root_quat_w,
+                            d.root_ang_vel_b, self.safe_assist, self.yaw_prediction_config)
+                    else:
+                        acceleration = acceleration - ref_acceleration
                 guidance['moving_cruise_acceleration']=torch.where(air,
-                    -r['cruise_acceleration_weight']*(force/r['nominal_mass_kg']).square().sum(-1)*(1-prep)*self.step_dt,0.)
+                    -r['cruise_acceleration_weight']*acceleration.square().sum(-1)*(1-prep)*self.step_dt,0.)
+                if self.first_landing_cross_config is not None:
+                    from .first_landing_cross_feedback import first_landing_cross_feedback
+                    edge = current - previous
+                    first_air = (air & nonzero & (self.last_attempted_target != old_index)
+                                 & (edge.norm(dim=-1) >= self.first_landing_cross_config['minimum_step_m'] - 1.e-6))
+                    if guard is not None:
+                        first_air &= ~guard.mask
+                    # Direct A can launch from the opening drop without a scored
+                    # prior contact to arm the rebound plan.
+                    velocity = d.root_link_lin_vel_w
+                    start = first_air & (launch | ((self.first_cross_release_step < 0) & (velocity[:, 2] > 0.)))
+                    self.first_cross_release_step[start] = self.common_step_counter
+                    self.first_cross_pending_cost.masked_fill_(start[:, None], 0.)
+                    root_xy = d.root_link_pos_w[:, :2]
+                    foot_offset = d.body_link_pos_w[:, self._foot_body_id, :2] - root_xy
+                    self.first_cross_foot_offset[start] = foot_offset[start]
+                    elapsed = (self.common_step_counter - self.first_cross_release_step) * self.step_dt
+                    remaining = (p.flight - elapsed).clamp_min(0.)
+                    forecast_cost, credit, first_cross_audit = first_landing_cross_feedback(
+                        root_xy + self.first_cross_foot_offset, velocity, self._two_ground_pt_xy_w,
+                        edge, elapsed, remaining, first_air & (self.first_cross_release_step >= 0),
+                        acceleration, self.landing_radius_m, self.step_dt, self.first_landing_cross_config)
+                    side = first_cross_audit['projected_cross_error_m'] > 0.
+                    self.first_cross_pending_cost += torch.stack(
+                        (torch.where(side, forecast_cost, 0.), torch.where(~side, forecast_cost, 0.)), dim=-1)
+                    guidance['moving_cruise_acceleration'] += (
+                        r['cruise_acceleration_weight'] * credit * (1 - prep) * self.step_dt)
+                cruise_audit = None
+                if self.continuation_cruise is not None and not route.evaluation:
+                    from .continuation_cruise import cruise_squared_relief
+                    teaching = self._ws_teaching_audit
+                    allowed = (air & ~physical & (self.last_attempted_target != old_index)
+                               & (teaching['continuation_cruise_target'] == old_index)
+                               & (teaching['continuation_cruise_step'] == self.common_step_counter))
+                    allowance = torch.where(allowed, teaching['continuation_cruise_allowance_m_s2'], 0.)
+                    reduction = cruise_squared_relief(acceleration, current - previous, allowance)
+                    label = 'moving_cruise_acceleration'
+                    base = guidance[label]
+                    relief = r['cruise_acceleration_weight'] * reduction * (1 - prep) * self.step_dt
+                    guidance[label] = base + relief
+                    cruise_audit = dict(allowance_m_s2=allowance, baseline_cost=base, relief=relief)
                 remaining=torch.where(f.phase==1,p.flight,(p.flight-f.air_steps*self.step_dt).clamp(min=0))
                 time_floor=torch.where(moving,remaining,0.)
                 rebound_audit=dict(preparation_weight=prep,preparation_active=prep_active,normal=normal,
@@ -1279,6 +1938,26 @@ def wrap_env(base):
                     launch_rotation_active=rotation_active,
                     actual_launch_velocity=d.root_link_lin_vel_w[:,:2].clone(),target_launch_velocity=p.velocity.clone(),
                     time_floor=time_floor,air=air,horizontal_force=force.norm(dim=-1))
+                if first_cross_audit is not None:
+                    rebound_audit['first_landing_cross'] = first_cross_audit
+                if cruise_audit is not None:
+                    rebound_audit['continuation_cruise'] = cruise_audit
+                if retry_rebound_audit is not None:
+                    rebound_audit['signed_retry_rebound'] = retry_rebound_audit
+                if tracking_audit is not None:
+                    rebound_audit['retry_rebound_tracking'] = tracking_audit
+                if self.support_config is not None:
+                    rebound_audit.update(support_preview_sample=preview_sample, support_preview_budget=preview_budget)
+                if self.retry_midflight:
+                    rebound_audit.update(retry_midflight_active=correcting,
+                                         retry_reference_acceleration=ref_acceleration)
+                if self.safe_assist:
+                    rebound_audit.update(retry_assist_discount=discount, retry_assist_headroom=headroom,
+                                         retry_assist_release_ok=self.retry_release_ok.clone(),
+                                         cruise_residual=acceleration)
+                if self.retry_capture:
+                    rebound_audit.update(retry_capture_stance=capture_active & stance,
+                                         retry_capture_flight=capture_active & early_air)
                 if self.adjust_continuation_approach:
                     rebound_audit.update(lead_changed=continuing,lead_delta=(approach_normal-previous_approach).norm(dim=-1))
                     if self.continuation_foot_offset_fraction:
@@ -1293,10 +1972,11 @@ def wrap_env(base):
                     rebound_audit.update(handoff_preparation_active=handoff_preparing,
                         handoff_outgoing_velocity=handoff_outgoing, handoff_predicted_landing_xy=forecast,
                         turn_unloading_active=turn_unloading, retry_unloading_active=retry_unloading)
+                    if route.evaluation or handoff.get('near_touchdown_preview'):
+                        rebound_audit['handoff_confidence'] = confidence
                     if route.evaluation:
                         if self.adjust_continuation_approach:
                             rebound_audit['continuation_reference_velocity_xy']=approach_velocity
-                        rebound_audit['handoff_confidence']=confidence
                         rebound_audit['desired_approach_normal_xy']=approach_normal[:,:2]
                         rebound_audit['actual_approach_normal_xy']=actual[:,:2]
                         rebound_audit['approach_velocity_z']=d.root_link_lin_vel_w[:,2].clone()
@@ -1313,10 +1993,49 @@ def wrap_env(base):
                     d.root_link_pos_w,d.body_link_pos_w[:,self._foot_body_id],d.root_link_lin_vel_w,
                     f.phase,d.joint_pos[:,self._spring_joint_id],d.joint_vel[:,self._spring_joint_id],
                     clearance,moving,weight,self.step_dt,self.impact_alignment_config)
-            if self.landing_guidance_config or self.touchdown_stability_config:
+            if self.landing_guidance_config or self.touchdown_stability_config or hasattr(self, 'hop_repeatability'):
                 valid=((f.phase==f.FLIGHT)&(f.air_steps>=5)
                     &(d.joint_pos[:,self._spring_joint_id]>.002)
                     &(f.apex_seen|(d.root_com_lin_vel_w[:,2]<=0))&~physical)
+            if self.overheight_band is not None:
+                from .apex_governor import overheight_debit
+                origin_z = self._terrain.env_origins[:, 2]
+                airborne = (f.phase == f.CANDIDATE) | (f.phase == f.FLIGHT)
+                guidance['moving_overheight'] = overheight_debit(
+                    d.root_link_pos_w[:, 2] - origin_z, f.peak - origin_z, airborne, self.overheight_band)
+            repeatability_samples = None
+            repeatability_active = hasattr(self, 'hop_repeatability') and getattr(route, 'ab_pairs', None) is not None
+            if repeatability_active:
+                guidance['ab_hop_repeatability'], repeatability_samples = self._ab_repeatability_cost(
+                    valid, physical, tilt)
+            if first_cross_audit is not None:
+                # Settle on measured same-side lateral misses. Already accrued
+                # cost is also settled if the hop ends before touchdown.
+                axis = torch.nn.functional.normalize(current - previous, dim=-1)
+                offset = d.body_link_pos_w[:, self._foot_body_id, :2] - self._two_ground_pt_xy_w
+                actual_cross = axis[:, 0] * offset[:, 1] - axis[:, 1] * offset[:, 0]
+                missed = valid & (actual_cross.abs() > self.landing_radius_m)
+                unlanded_terminal = physical | (self.reset_time_outs.bool() & ~valid)
+                pending = self.first_cross_pending_cost
+                same_side = torch.where(actual_cross > 0., pending[:, 0], pending[:, 1])
+                guidance['first_landing_cross'] = torch.where(
+                    unlanded_terminal, pending.sum(-1), torch.where(missed, same_side, 0.))
+                first_cross_audit.update(measured_cross_miss=missed, unlanded_terminal=unlanded_terminal)
+                self.first_cross_release_step.masked_fill_(valid | unlanded_terminal, -1)
+                pending.masked_fill_((valid | unlanded_terminal)[:, None], 0.)
+            if self.compression_config is not None:
+                tracked = self.retry_compression.tracking.clone()
+                speed_error = (d.root_link_lin_vel_w[:, :2]-p.velocity).norm(dim=-1)
+                hit = (d.body_link_pos_w[:,self._foot_body_id,:2]-self._two_ground_pt_xy_w).norm(dim=-1) <= self.landing_radius_m
+                expired = tracked & ((self.common_step_counter-p.contact_step)*self.step_dt
+                                     > self.omni_handoff_config['contact_window_s'] + 1.e-6)
+                guidance['retry_compression'] = self.retry_compression.step(
+                    speed_error, p.flight, launch, valid, hit, physical, expired | self.reset_time_outs.bool())
+                rebound_audit.update(compression_tracked=tracked, compression_error=speed_error)
+            if self.support_config is not None:
+                foot_error = (d.body_link_pos_w[:, self._foot_body_id, :2] - self._two_ground_pt_xy_w).norm(dim=-1)
+                guidance['support_preview_release'] = self.support_preview.settle(valid, physical, foot_error, self.landing_radius_m)
+                rebound_audit['support_failed'] = physical | (valid & (foot_error > self.landing_radius_m))
             if self.landing_guidance_config:
                 projection_xy=None
                 if self.landing_guidance_config.get('projection_origin'):
@@ -1342,12 +2061,78 @@ def wrap_env(base):
                         precision_mask=straight & (edge.norm(dim=-1)>=.40) & (self.last_attempted_target!=old_index)
                         if guard is not None:
                             precision_mask &= ~guard.mask
+                if self.waypoint_events is not None:
+                    from .waypoint_event_costs import retry_rebound_growth
+                    first_long = (moving & straight & (self.last_attempted_target != old_index)
+                                  & (edge.norm(dim=-1) >= self.waypoint_events['minimum_straight_step_m']))
+                    retry_release = launch & self.retry_latched
+                    if guard is not None:
+                        first_long &= ~guard.mask
+                        retry_release &= ~guard.mask
+                    opening = torch.zeros_like(first_long)
+                    ab = getattr(route, 'ab_pairs', None)
+                    if ab is not None:
+                        opening = ((old_index == ab.a_index) & ~ab.seen_a & free
+                                   & (d.root_link_lin_vel_w[:, 2] > 0))
+                    cross, reached = self.straight_first_apex.step(
+                        launch, opening, first_long, free, d.body_link_pos_w[:, self._foot_body_id, :2],
+                        d.root_link_pos_w[:, :2], d.root_link_lin_vel_w, self._two_ground_pt_xy_w,
+                        edge, p.flight, self.common_step_counter, self.step_dt, self.landing_radius_m)
+                    growth = retry_rebound_growth(
+                        error.sqrt(), self.retry_entry_error, p.flight, retry_release,
+                        self.safe_assist['max_release_error_m_s'], self.landing_radius_m, r['launch_weight'])
+                    foot_error = d.body_link_pos_w[:, self._foot_body_id, :2] - self._two_ground_pt_xy_w
+                    cross_cost, growth_cost = self.waypoint_outcome.step(
+                        reached, cross, retry_release, growth, d.root_link_lin_vel_w[:, :2] - p.velocity,
+                        valid, physical, foot_error, edge, self.landing_radius_m,
+                        self.landing_guidance_config['landing_weight'])
+                    guidance['straight_first_apex_cross'] = cross_cost
+                    guidance['retry_rebound_growth'] = growth_cost
+                    rebound_audit.update(first_straight_apex=reached, retained_release=retry_release,
+                                         event_settlement=valid | physical,
+                                         event_miss=(valid & (foot_error.norm(dim=-1) > self.landing_radius_m)) | physical)
+                powered_clock = None
+                first_clock_cap = None
+                if self.imu_link_flight_guidance is not None:
+                    from .imu_link_flight import collective_cost, sample_ascent
+                    from .yaw_thrust_feedback import _thrust_from_duty
+                    config = self.imu_link_flight_guidance
+                    plant = self._imu_link_plant
+                    height, _, _, apex, _, landing_time, gate = sample_ascent(self, config, clearance)
+                    first_travel = moving & nonzero & (self.last_attempted_target != old_index)
+                    gate *= first_travel
+                    powered_clock = (landing_time, gate, config['maximum_clock_change_s'])
+                    if self.first_ascent_teaching is not None and not route.evaluation:
+                        long_step = (current - previous).norm(dim=-1) >= .35
+                        first_clock_cap = (self.first_ascent_teaching['reference_flight_s'] - f.air_steps * self.step_dt,
+                                           gate * long_step)
+                    target_force, assist, spare, deficit = self._imu_link_collective_reference
+                    commanded_duty = (.5 * (1. + self._actions) * plant.voltage_gain[:, None]).clamp(0., 1.)
+                    commanded = plant.collective_scale * _thrust_from_duty(commanded_duty).sum(-1)
+                    guidance['imu_link_collective_guidance'] = collective_cost(
+                        commanded, target_force, assist, first_travel, self.step_dt, config)
+                    self.extras.setdefault('log', {}).update({
+                        'ImuLink/clock_active_fraction': (gate > 0.).float().mean(),
+                        'ImuLink/collective_guidance_fraction': (first_travel & (assist > 0.)).float().mean(),
+                        'ImuLink/collective_reference_peak_n': torch.where(first_travel, assist, 0.).max(),
+                    })
                 landing_terms,guidance_audit=landing_guidance(
                     d.body_link_pos_w[:,self._foot_body_id,:2],clearance,d.root_link_lin_vel_w,
                     d.root_link_pos_w[:,2]-self._terrain.env_origins[:,2],
                     self._two_ground_pt_xy_w,self._desired_pos_w[:,2]-self._terrain.env_origins[:,2],
                     f.phase,moving,valid,abs(self.sim.cfg.gravity[2]),self.step_dt,self.landing_guidance_config,
-                    time_floor,projection_xy,blend_mask,precision_mask)
+                    time_floor,projection_xy,blend_mask,precision_mask,powered_clock,first_clock_cap)
+                if powered_clock is not None:
+                    edge = torch.nn.functional.normalize(current - previous, dim=-1)
+                    cross = torch.stack((-edge[:, 1], edge[:, 0]), dim=-1)
+                    miss = guidance_audit['projected_foot_xy'] - self._two_ground_pt_xy_w
+                    guidance_audit.update(
+                        powered_clock_weight=gate, powered_estimated_apex_m=apex,
+                        powered_estimated_time_s=landing_time, estimated_rise_m=apex - height,
+                        projected_along_error_m=(miss * edge).sum(-1),
+                        projected_cross_error_m=(miss * cross).sum(-1),
+                        collective_assist_n=torch.where(first_travel, assist, 0.),
+                        collective_spare_n=spare, height_deficit_m=deficit)
                 guidance.update(landing_terms)
                 if self.directional_landing:
                     axis=torch.nn.functional.normalize(edge,dim=-1)
@@ -1372,6 +2157,12 @@ def wrap_env(base):
             if self.touchdown_stability_config:
                 guidance['moving_touchdown_rate']=touchdown_rate_cost(
                     d.root_ang_vel_b,moving,valid,self.touchdown_stability_config)
+            if self.yaw_contact_jump_config is not None:
+                from .ring_geometry import rotate
+                spin = rotate(d.root_quat_w, d.root_ang_vel_b)[:, 2]
+                loaded = d.joint_pos[:, self._spring_joint_id] > .002
+                guidance['yaw_contact_jump'] = yaw_contact_jump_cost(
+                    self.yaw_precontact_spin, spin, self.yaw_previously_loaded, loaded, self.yaw_contact_jump_config)
             before={name:self._episode_sums[name].clone() for name in REWEIGHTED}
             yaw_audit=None
             if self.yaw_prediction_config:
@@ -1382,6 +2173,14 @@ def wrap_env(base):
                 future=heading_error+self.yaw_prediction_config['response_horizon_s']*heading_rate
                 future=torch.atan2(future.sin(),future.cos())
                 yaw_audit=dict(error=heading_error,rate=heading_rate,predicted_error=future)
+                if self.all_phase_yaw is not None:
+                    # Sample before the parent settles contact or resets a lane.
+                    # No phase, goal, near-retry, or survival mask.
+                    guidance['all_phase_yaw'] = yaw_envelope_cost(
+                        heading_error, heading_rate, d.root_ang_vel_b[:, 2], self.step_dt,
+                        self.yaw_prediction_config, self.all_phase_yaw)
+                    yaw_audit.update(body_wz=d.root_ang_vel_b[:, 2].clone(),
+                                     phase=f.phase.clone(), terminal_physical=physical)
                 if self.score_yaw_peak:
                     # Exactly one reset at physical free liftoff, not at goal
                     # switches,repeated contact samples or failed touchdowns.
@@ -1414,6 +2213,13 @@ def wrap_env(base):
                 # The parent scores the completed hop before changing the
                 # command. In guarded lanes 'nonzero' captured STEP at entry.
                 first=self.last_attempted_target!=old_index
+                if self.ws_continuation_forecast is not None:
+                    advanced = route.index == old_index + 1
+                    hit = guidance_audit['foot_error_m'] <= self.landing_radius_m
+                    continuation = first & moving & nonzero & hit & advanced
+                    if guard is not None:
+                        continuation &= ~guard.mask
+                    self.ws_continuation_forecast.touchdown(valid, continuation, route.index)
                 if self.adjacent_landing_weight:
                     from .precision_streak import adjacent_landing
                     counted=valid & ~route.stationary_mask
@@ -1463,15 +2269,66 @@ def wrap_env(base):
                     self.stop_after_move |= contact & nonzero
                 advanced=route.index>old_index
                 goal=torch.where(advanced[:,None],contact_goals[1],contact_goals[0])
+                ab = getattr(route, 'ab_pairs', None)
+                if ab is not None and ab.recovery is not None:
+                    # A local hold replaces the old A with the measured foot.
+                    # Latch the goal actually published on this contact tick.
+                    goal = self._two_ground_pt_xy_w
                 if guard is not None:
                     advanced=torch.where(guard.mask,self._omni_last_navigation_advance,advanced)
                     goal=torch.where(guard.mask[:,None],self._two_ground_pt_xy_w,goal)
                 ema=r['duration_ema']
                 p.flight[contact]=(1-ema)*p.flight[contact]+ema*(air_steps[contact]*self.step_dt).clamp(.6,1.2)
-                p.velocity[contact]=(goal[contact]-d.body_link_pos_w[contact,self._foot_body_id,:2])/p.flight[contact,None]
+                plan_flight = p.flight
+                if self.first_ascent_teaching is not None and not route.evaluation:
+                    edge = contact_goals[1] - contact_goals[0]
+                    new_long = advanced & (edge.norm(dim=-1) >= .35)
+                    plan_flight = torch.where(new_long, p.flight.clamp_max(
+                        self.first_ascent_teaching['reference_flight_s']), p.flight)
+                p.velocity[contact]=(goal[contact]-d.body_link_pos_w[contact,self._foot_body_id,:2])/plan_flight[contact,None]
                 limit=self.landing_guidance_config['speed_limit_m_s']/p.velocity.norm(dim=-1).clamp(min=1e-9)
                 p.velocity*=limit.clamp(max=1.)[:,None]
                 p.pending[contact]=True;p.contact_step[contact]=self.common_step_counter
+                if tracking_audit is not None:
+                    config = self.retry_rebound_tracking_config
+                    prepared_age = (self.common_step_counter - self.rebound_tracking_prepared_step) * self.step_dt
+                    measured_offset = d.body_link_pos_w[:, self._foot_body_id, :2] - contact_goals[0]
+                    overshot = (measured_offset * self.rebound_tracking_axis).sum(-1) > self.landing_radius_m
+                    same_goal = (goal == contact_goals[0]).all(-1)
+                    confirmed = (contact & nonzero & ~advanced & same_goal & overshot
+                                 & (self.rebound_tracking_target == old_index)
+                                 & (prepared_age <= config['confirm_window_s'] + 1.e-6))
+                    self.rebound_tracking_in_support[contact] = confirmed[contact]
+                    self.rebound_tracking_target[contact] = -1
+                    elapsed = (self.common_step_counter - p.contact_step) * self.step_dt
+                    self.rebound_tracking_in_support &= ~launch & ~physical & (elapsed <= config['support_window_s'])
+                    support = (self.rebound_tracking_in_support & moving
+                               & (d.joint_pos[:, self._spring_joint_id] > .001))
+                    measured_axis = (actual[:, :2] * self.rebound_tracking_axis).sum(-1)
+                    error_out = (measured_axis - self.rebound_tracking_along).clamp_min(0.)
+                    guidance['moving_rebound_approach'] -= torch.where(
+                        support, r['approach_weight'] * error_out.square() * self.step_dt, 0.)
+                    tracking_audit.update(confirmed_support=confirmed, support_active=support)
+                if self.compression_config is not None:
+                    retained = moving & nonzero & ~advanced
+                    if ab is not None:
+                        retained &= ab.recovery.active == ab.recovery.RETRY
+                        rebound_audit['compression_promoted'] = self._compression_promoted
+                    if guard is not None:
+                        retained &= ~guard.mask
+                    self.retry_compression.contact(contact, retained, (d.root_link_lin_vel_w[:,:2]-p.velocity).norm(dim=-1))
+                if self.retry_capture or self.retry_midflight:
+                    retained = moving & ~advanced
+                    if ab is not None:
+                        retained &= ab.recovery.active == ab.recovery.RETRY
+                    if guard is not None:
+                        retained &= ~guard.mask
+                    self.retry_latched[contact] = retained[contact]
+                    if self.waypoint_events is not None:
+                        contact_error = (d.root_link_lin_vel_w[:, :2] - p.velocity).norm(dim=-1)
+                        self.retry_entry_error[contact] = contact_error[contact]
+                if self.retry_capture:
+                    self.retry_contact_velocity[contact] = d.root_link_lin_vel_w[contact, :2]
                 if self.omni_handoff_config:
                     # Use the confirmed queue outcome and measured foot position,
                     # never the forecast, for the unloading velocity objective.
@@ -1482,6 +2339,15 @@ def wrap_env(base):
                               & ((current_edge*next_edge).sum(-1)>=self.continuation_cosine*current_edge.norm(dim=-1)*edge_norm))
                         axis=next_edge/edge_norm.clamp_min(1e-6)[:,None]
                         p.continuation_axis[contact]=torch.where(same[:,None],axis,0.)[contact]
+                        if self.support_config is not None:
+                            retained = moving & ~advanced
+                            if ab is not None:
+                                retained &= ab.recovery.active == ab.recovery.RETRY
+                            straight_long = same & (edge_norm >= .4) & (current_edge.norm(dim=-1) >= .4)
+                            if guard is not None:
+                                retained &= ~guard.mask
+                                straight_long &= ~guard.mask
+                            self.support_preview.contact(contact, straight_long, retained, d.root_link_lin_vel_w[:, :2])
                         if self.south_release:
                             both_long = (edge_norm>=self.south_min_edge-1e-6) & (current_edge.norm(dim=-1)>=self.south_min_edge-1e-6)
                             self.south_pair[contact] = (same & both_long & (-axis[:,1]>=self.south_cosine))[contact]
@@ -1562,12 +2428,19 @@ def wrap_env(base):
                 inherited=inherited,deltas=deltas,adjustment=adjustment,guidance=guidance_audit,
                 impact_alignment=impact_audit,rebound=rebound_audit,yaw_prediction=yaw_audit,
                 rotation_prediction=rotation_audit,body_rate=body_rate_audit,
+                repeatability_samples=repeatability_samples,
                 rotation_work_extension=work_extension_audit,
                 outward_tilt_work_active=outward_tilt_work_active)
             self.extras.setdefault('log',{}).update({
                 'Moving/phase_reward_delta':adjustment.mean(),
                 'Moving/transport_samples':(moving&(weight==0)).float().mean(),
                 'Moving/landing_samples':(moving&(weight>0)).float().mean()})
+            if self.compression_config is not None and 'compression_promoted' in rebound_audit:
+                compression_delta = guidance['retry_compression']
+                self.extras['log'].update({
+                    'AB/compression_promotions_per_step': rebound_audit['compression_promoted'].sum(),
+                    'AB/compression_debits_per_step': (compression_delta < 0).sum(),
+                    'AB/compression_returns_per_step': (compression_delta > 0).sum()})
             if guidance_audit is not None:
                 self.extras['log'].update({
                     'Moving/velocity_guidance_mean':guidance['moving_velocity_guidance'].mean(),
@@ -1575,11 +2448,28 @@ def wrap_env(base):
                     'Moving/requested_velocity_max_m_s':guidance_audit['desired_velocity_xy'].norm(dim=-1).max()})
             if self.touchdown_stability_config:
                 self.extras['log']['Moving/touchdown_rate_cost_mean']=guidance['moving_touchdown_rate'].mean()
+            if self.overheight_band is not None:
+                self.extras['log']['Height/overheight_cost_mean'] = guidance['moving_overheight'].mean()
+            if repeatability_active:
+                self.extras['log']['AB/repeatability_samples'] = repeatability_samples.sum()
             if rebound_audit is not None:
                 self.extras['log'].update({
                     'Moving/rebound_preparation_fraction':(rebound_audit['preparation_weight']>0).float().mean(),
                     'Moving/launch_velocity_cost':guidance['moving_launch_velocity'].mean(),
                     'Moving/cruise_acceleration_cost':guidance['moving_cruise_acceleration'].mean()})
+            if first_cross_audit is not None:
+                self.extras['log'].update({
+                    'Precision/first_cross_active_fraction': first_cross_audit['active'].float().mean(),
+                    'Precision/first_cross_settled_cost': guidance['first_landing_cross'].mean(),
+                })
+            if retry_rebound_audit is not None:
+                self.extras['log']['Precision/signed_retry_rebound_active_fraction'] = (
+                    retry_rebound_audit['active'].float().mean())
+            if tracking_audit is not None:
+                self.extras['log'].update({
+                    'Precision/rebound_tracking_preparation_fraction': tracking_audit['active'].float().mean(),
+                    'Precision/rebound_tracking_support_fraction': tracking_audit['support_active'].float().mean(),
+                })
             if yaw_audit is not None:
                 count=moving.sum().clamp(min=1)
                 self.extras['log']['Moving/world_heading_error_rms_deg']=torch.rad2deg(
@@ -1604,6 +2494,8 @@ def wrap_env(base):
                         rebound_audit['contact_reference_weight']>0).float().mean()
             if self.score_yaw_peak:
                 self.extras['log']['Moving/yaw_peak_cost']=guidance['moving_yaw_peak'].mean()
+            if self.all_phase_yaw is not None:
+                self.extras['log']['Yaw/all_phase_cost'] = guidance['all_phase_yaw'].mean()
             return reward+adjustment
 
     return MovingPhaseEnv

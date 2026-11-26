@@ -19,6 +19,13 @@ class RingEnv(CalibratedAirMixin, QuadhopperEnv):
     def __init__(self,cfg,course,diagnostic=False,**kwargs):
         self.landing_radius_m = course.get("omni", {}).get("strict_foot_m", .1)
         self.course=course;self.diagnostic=diagnostic;self.trajectory=[]
+        self._physical_robustness_config = course.get('physical_robustness')
+        self._physical_robustness = None
+        if self._physical_robustness_config is not None:
+            from .physical_robustness import validate
+            if course.get('task') != 'obs73_omni_ground_targets_v1':
+                raise ValueError('Planar perturbations require the OBS73 ground-target task')
+            validate(self._physical_robustness_config)
         super().__init__(cfg,**kwargs)
         self._foot_event=LandingGainTracker(self.num_envs,self.device)
         self._foot_body_id=self._robot.find_bodies('SpringLeg')[0][0]
@@ -32,16 +39,21 @@ class RingEnv(CalibratedAirMixin, QuadhopperEnv):
     def _reset_idx(self,ids):
         if ids is None or len(ids)==self.num_envs:ids=self._robot._ALL_INDICES
         super()._reset_idx(ids)
+        if self._physical_robustness is not None:
+            self._physical_robustness.reset(ids)
         d=self._robot.data
         self._robot.write_joint_state_to_sim(d.default_joint_pos[ids].clone(),d.default_joint_vel[ids].clone(),env_ids=ids)
         reset_release(self,ids)
         reset_fixed_attitude(self,ids,self.cfg.seed)
         prime_off_history(self,ids)
+        plant = getattr(self, '_imu_link_plant', None)
+        if plant is not None:
+            plant.reset(ids)
         # Allocate the inherited target bookkeeping, then set the fixed R1 pair.
         reset_target(self,ids,self.cfg.seed,evaluation=False)
         _ensure(self,self.cfg.seed);self._range08_training=False
-        self._reset_task_targets(ids)
         self._two_ground_route_index[ids]=0
+        self._reset_task_targets(ids)
         self._two_ground_total_resets+=len(ids)
         _set_active_goal(self,ids)
         if hasattr(self,'_foot_event'):self._foot_event.reset(ids)
@@ -68,10 +80,29 @@ class RingEnv(CalibratedAirMixin, QuadhopperEnv):
     def _advance_targets(self):
         advance_on_hit(self,self._foot_event.last_qualified&~self.reset_buf)
 
+    def install_imu_link_plant(self):
+        if not hasattr(self, '_imu_link_plant'):
+            from .imu_link_plant import ImuLinkPlant
+            self._imu_link_plant = ImuLinkPlant(self, self.course['imu_link_plant'])
+            self._imu_link_plant.audit = self._imu_link_plant.install_spring()
+        return self._imu_link_plant.audit
+
     def _pre_physics_step(self,actions):
         update_release_phase(self)
+        if self._physical_robustness_config is not None and not self.omni_route.evaluation:
+            # Delay the first draw until after the runner's nominal asset audit.
+            if self._physical_robustness is None:
+                from .physical_robustness import PlanarPhysicalRobustness
+                self._physical_robustness = PlanarPhysicalRobustness(self, self._physical_robustness_config)
+                self._physical_robustness.reset(self._robot._ALL_INDICES)
+            self._physical_robustness.maybe_push()
         super()._pre_physics_step(actions)
-        suppress_off_wrench(self)
+        plant = getattr(self, '_imu_link_plant', None)
+        running = None
+        if plant is not None:
+            plant.step()
+            running = (plant.collective_u.amax(dim=-1) > 1e-8) | (plant.attitude_u.amax(dim=-1) > 1e-8)
+        suppress_off_wrench(self, running)
 
     def _ring_sample(self):
         if not hasattr(self,'ring') or self.ring.previous is None:return

@@ -1,0 +1,66 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+    customLayerData = {
+        dictionary cameraSettings = {
+            string boundCamera = "/World/PreviewCamera"
+        }
+    }
+)
+
+def Xform "World"
+{
+    def Xform "TGate" (
+        prepend references = @./TGate_20mm.usda@
+    )
+    {
+        double3 xformOp:translate = (0.265, 0, 1.075)
+        double3 xformOp:rotateXYZ = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+
+    def Xform "Hopper" (
+        prepend references = @./HopperCalibrated20261028.usda@
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0.285)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cube "Floor" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+        color3f[] primvars:displayColor = [(0.16, 0.22, 0.29)]
+        double3 xformOp:translate = (0.25, 0, -0.01)
+        float3 xformOp:scale = (2, 2, 0.02)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+
+    def DomeLight "Ambient"
+    {
+        float inputs:intensity = 250
+    }
+
+    def DistantLight "Key"
+    {
+        float inputs:intensity = 1500
+        double3 xformOp:rotateXYZ = (35, -25, -28)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    def Camera "PreviewCamera"
+    {
+        float focalLength = 24
+        float horizontalAperture = 32
+        float verticalAperture = 24
+        float2 clippingRange = (0.01, 50)
+        double3 xformOp:translate = (-0.95, -0.72, 1.02)
+        double3 xformOp:rotateXYZ = (70.95, 0, -56.02)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+}

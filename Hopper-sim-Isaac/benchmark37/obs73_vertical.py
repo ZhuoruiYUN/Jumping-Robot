@@ -261,11 +261,22 @@ def env_class(evaluation=False, evaluation_level=None):
                 raise ValueError('Position plateau requires reference rewards and radius below strict10cm')
             self._foot_event = FootTouchdownTracker(self.num_envs,self.device,self.landing_radius_m)
             self.vertical_curriculum = VerticalCurriculum(self.vertical_config, evaluation)
+            spawn = self.course.get('ab_spawn')
+            if spawn and not evaluation:
+                if not self.course.get('omni', {}).get('ab_pair_only'):
+                    raise ValueError('AB spawn randomization requires direct A/B training')
+                from .ab_spawn import ABSpawn
+                self.ab_spawn = ABSpawn(self.num_envs, self.device, self.cfg.seed, spawn)
             self.response_envelope = None
             if self.vertical_config.get('response_robustness'):
                 from .obs73_response_robustness import ResponseEnvelope
                 self.response_envelope = ResponseEnvelope(self.num_envs, self.device,
                     self.vertical_config['response_robustness'], self.cfg.seed, evaluation)
+            omni_config = self.course.get('omni', {})
+            self.repeated_hold_full_response = omni_config.get('ab_repeated_hold_full_response', False)
+            if self.repeated_hold_full_response and not (
+                    self.response_envelope is not None and omni_config.get('ab_repeated_hold_fraction')):
+                raise ValueError('Extended hold response requires repeated AB holds and the existing response envelope')
             self.evaluation_at_training_difficulty = evaluation_level is not None
             if evaluation_level is not None:
                 if not evaluation or not 0 <= evaluation_level < len(self.vertical_config['levels']):
@@ -361,6 +372,10 @@ def env_class(evaluation=False, evaluation_level=None):
                 margin = self.reference_reward.get('height_reward_margin_m', 0.)
                 if not math.isfinite(margin) or margin < 0:
                     raise ValueError('Invalid reference height reward margin')
+                surplus_scale = self.reference_reward.get('surplus_height_scale')
+                if surplus_scale is not None:
+                    from .obs73_reference_reward import validate_surplus_height_scale
+                    validate_surplus_height_scale(surplus_scale)
 
             self.flight_quality = None
             if 'flight_quality' in self.vertical_config:
@@ -408,6 +423,8 @@ def env_class(evaluation=False, evaluation_level=None):
             if not hasattr(self, 'vertical_curriculum'):
                 return
             ids = self._robot._ALL_INDICES if ids is None else ids
+            ab = getattr(getattr(self, 'omni_route', None), 'ab_pairs', None)
+            paired = ab.paired_axes if ab is not None else None
             physics = self.course.get('rigid_body_randomization')
             if physics:
                 from .flight_plane import set_rigid_scales
@@ -415,11 +432,22 @@ def env_class(evaluation=False, evaluation_level=None):
                     self.rigid_scales = torch.ones(self.num_envs,2)
                     self.rigid_rng = torch.Generator().manual_seed(self.cfg.seed + 47001)
                 scales = torch.empty(len(ids),2).uniform_(*physics['factor_range'], generator=self.rigid_rng)
+                if paired is not None:
+                    scales = paired.match(ids, 'rigid_scales', scales.to(ids.device)).cpu()
                 set_rigid_scales(self, ids, scales)
                 self.dr_mass_multi[ids] = 1.
                 self.dr_inertia_multi[ids] = 1.
             if self.response_envelope is not None:
-                self.response_envelope.reset(ids, self.dr_inertia_multi)
+                hold = ab.repeated_hold[ids] if self.repeated_hold_full_response and ab is not None else None
+                self.response_envelope.reset(ids, self.dr_inertia_multi, hold)
+            if paired is not None:
+                self.dr_tm[ids] = paired.match(ids, 'motor_time_constants', self.dr_tm[ids])
+                self.dr_mass_multi[ids] = paired.match(ids, 'mass_gain', self.dr_mass_multi[ids])
+                self.dr_inertia_multi[ids] = paired.match(ids, 'inertia_gain', self.dr_inertia_multi[ids])
+                if self.response_envelope is not None:
+                    response = self.response_envelope
+                    response.base_inertia[ids] = paired.match(ids, 'base_inertia', response.base_inertia[ids])
+                    response.gain[ids] = paired.match(ids, 'response_gain', response.gain[ids])
             c = self.vertical_curriculum.current
             self._vertical_episode_level[ids] = self.vertical_curriculum.level
             d = self._robot.data
@@ -431,7 +459,31 @@ def env_class(evaluation=False, evaluation_level=None):
             upright = torch.rand(len(ids), generator=self._vertical_rng, device=self.device) < c['upright_fraction']
             rp[upright] = 0.
             pose[:, 3:7] = quaternion(rp)
+            if hasattr(self, 'ab_spawn'):
+                from isaaclab.utils.math import quat_from_euler_xyz
+                selected, offset, angles, velocity = self.ab_spawn.sample(ids, paired)
+                changed = ids[selected]
+                pose[selected, :2] = self._terrain.env_origins[changed, :2] + offset
+                pose[selected, 3:7] = quat_from_euler_xyz(*angles.unbind(-1))
+                rp[selected] = angles[:, :2]
+            if paired is not None:
+                pose = paired.match(ids, 'release_pose', pose)
+                rp = paired.match(ids, 'release_roll_pitch', rp)
             self._robot.write_root_pose_to_sim(pose, ids)
+            if hasattr(self, 'ab_spawn') and len(changed):
+                from .two_ground_targets import _set_active_goal
+                self._robot.write_root_velocity_to_sim(velocity, changed)
+                _set_active_goal(self, changed)
+                self.ring.reset(changed, d.root_link_pos_w, d.root_quat_w,
+                                d.joint_pos[:, self._spring_joint_id], self._terrain.env_origins)
+            if paired is not None:
+                local_xy = pose[:, :2] - self._terrain.env_origins[ids, :2]
+                paired.anchor(self.omni_route, ids, local_xy)
+                release_ids = ids[paired.lanes[ids]]
+                if len(release_ids):
+                    self._bind_targets(release_ids)
+                    self.ring.reset(release_ids, d.root_link_pos_w, d.root_quat_w,
+                                    d.joint_pos[:, self._spring_joint_id], self._terrain.env_origins)
             self._release_tilt_rp[ids] = rp
             self._desired_pos_w[ids, 2] = self._terrain.env_origins[ids, 2] + c['target_apex_m']
             if self.jump_cycle is not None:
@@ -521,10 +573,32 @@ def env_class(evaluation=False, evaluation_level=None):
                         self.vertical_config['landing_reward'], self.landing_radius_m, foot_bonus_mask)
                     if self.reference_reward is not None:
                         from .obs73_reference_reward import flight_terms, landing_terms
-                        replacements.update(flight_terms(d.root_pos_w[:, 2], d.root_lin_vel_w[:, 2], target,
-                            abs(self.sim.cfg.gravity[2]), self.cfg.vertical_energy_error_scale,
+                        reward_z, reward_vz = d.root_pos_w[:, 2], d.root_lin_vel_w[:, 2]
+                        gravity = abs(self.sim.cfg.gravity[2])
+                        surplus_mask = None
+                        surplus_scale = self.reference_reward.get('surplus_height_scale')
+                        route = getattr(self, 'omni_route', None)
+                        if surplus_scale is not None and not evaluation and route is not None:
+                            rows, index = self._robot._ALL_INDICES, route.index
+                            edge = route.points[rows, index] - route.points[rows, (index - 1).clamp_min(0)]
+                            moving = (index > 0) & edge.ne(0.).any(dim=-1)
+                            stationary = getattr(route, 'stationary_mask', None)
+                            if stationary is not None:
+                                moving &= ~stationary
+                            high_enough = peak >= target
+                            coast = getattr(self, '_ws_teaching_audit', {}).get('coast_apex_m')
+                            if coast is not None:
+                                high_enough |= coast >= 1.005
+                            surplus_mask = moving & airborne & ~contact & ~physical & high_enough
+                            equivalent_height = reward_z.clamp_min(0.) + .5 * reward_vz.square() / gravity
+                            self._surplus_height_scale_active = (
+                                surplus_mask & (surplus_scale['scale'] < 1.)
+                                & (equivalent_height - target > surplus_scale['start_above_target_m'])
+                            )
+                        replacements.update(flight_terms(reward_z, reward_vz, target,
+                            gravity, self.cfg.vertical_energy_error_scale,
                             {name: getattr(self.cfg, name+'_reward_scale') for name in ('energy_tracking','distance_to_z','apex')},
-                            self.step_dt, self.reference_reward))
+                            self.step_dt, self.reference_reward, surplus_mask=surplus_mask))
                         cycle_landing, deficit = landing_terms(peak, target, foot_error, tilt, valid,
                             self.vertical_config['landing_reward'], self.reference_reward,
                             position_plateau_m=self.position_plateau_m, foot_limit_m=self.landing_radius_m)

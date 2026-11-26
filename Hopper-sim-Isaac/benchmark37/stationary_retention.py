@@ -17,29 +17,42 @@ class RetentionRoute(GroundRoute):
     def __init__(self,n,device,config,seed,evaluation=False,stationary_only=False,training_mixture=None,
                  training_stationary_fraction=.5):
         super().__init__(n,device,config,seed,evaluation,training_mixture=training_mixture)
-        if training_stationary_fraction not in (.25,.5):
+        ab_only = config.get('ab_pair_only', False)
+        if ab_only and (not config.get('ab_pair_training') or training_stationary_fraction != 0.):
+            raise ValueError('AB-only courses require AB sampling and zero stationary training lanes')
+        if not ab_only and training_stationary_fraction not in (.25,.5):
             raise ValueError('Supported stationary rehearsal fractions are one quarter and one half')
-        stride=int(1/training_stationary_fraction)
         self.stationary_mask=torch.ones(n,dtype=torch.bool,device=device) if stationary_only else (
-            torch.zeros(n,dtype=torch.bool,device=device) if evaluation else torch.arange(n,device=device)%stride==0)
+            torch.zeros(n,dtype=torch.bool,device=device) if evaluation or ab_only else
+            torch.arange(n,device=device)%int(1/training_stationary_fraction)==0)
         self.short_episode_mask=self.stationary_mask
         self.ab_pairs=None
         if config.get('ab_pair_training') and not evaluation and not stationary_only:
             from .ab_pairs import ABPairs
-            self.ab_pairs=ABPairs(n,device,seed,focus=config.get('ab_full_pair_focus',False))
-        if config.get('startup_rehearsal') and not (evaluation or stationary_only):
+            self.ab_pairs=ABPairs(n,device,seed,focus=config.get('ab_full_pair_focus',False),
+                                  all_lanes=ab_only,recovery_config=config.get('ab_miss_recovery'),
+                                  paired_axes=config.get('ab_paired_axes', False),
+                                  opening_hold_probability=config.get('ab_opening_hold_probability', 0.),
+                                  repeated_hold_fraction=config.get('ab_repeated_hold_fraction', 0.))
+        if config.get('startup_rehearsal') and not (evaluation or stationary_only or ab_only):
             # Ordinary moving environments; keyboard is slot 1, distance practice is slot 3.
             self.startup_mask=torch.arange(n,device=device)%8==5
             self.short_episode_mask=self.stationary_mask | self.startup_mask
             self.startup_starts=torch.zeros((),dtype=torch.long,device=device)
         self.distance_practice=None
-        if config.get('precision_distance_practice') and not (evaluation or stationary_only):
+        if config.get('precision_distance_practice') and not (evaluation or stationary_only or ab_only):
             from .precision_distance import DistancePractice
             if config['moving_distance_range_m'][1]!=.5:
                 raise ValueError('Distance practice requires the half-metre course')
             self.distance_practice=DistancePractice(n,device)
 
     def reset(self,ids,common_step_counter=0):
+        if self.ab_pairs is not None and self.ab_pairs.all_lanes:
+            self.ab_pairs.reset(self, ids)
+            self.sampled_max[ids] = self.current_max(common_step_counter)
+            if self.adjacent_metrics is not None:
+                self.adjacent_metrics.reset(ids)
+            return
         super().reset(ids,common_step_counter)
         if self.ab_pairs is not None:
             self.ab_pairs.reset(self,ids)

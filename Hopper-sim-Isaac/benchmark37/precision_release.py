@@ -64,10 +64,43 @@ def long_step_window_reference(reference, edge, eligible, discount, scale=None):
     return reference-torch.where(active,forward,0.)[:,None]*axis
 
 
+def pre_reversal_geometry(edge, preview):
+    reversal=torch.nn.functional.cosine_similarity(edge,preview,dim=-1)<-.866
+    return reversal & (edge.norm(dim=-1)>=.40) & (preview.norm(dim=-1)>=.20)
+
+
 def pre_reversal_loss(edge, preview, velocity, reference, flight, release, config):
     axis=torch.nn.functional.normalize(edge,dim=-1)
-    reversal=torch.nn.functional.cosine_similarity(edge,preview,dim=-1)<-.866
-    eligible=release & reversal & (edge.norm(dim=-1)>=.40) & (preview.norm(dim=-1)>=.20)
+    eligible=release & pre_reversal_geometry(edge, preview)
     deficit=((reference-velocity)*axis).sum(-1)-config['allowance_m_s']
     excess=(deficit.clamp_min(0.)*flight/.05).square()
     return torch.where(eligible,config['weight']*torch.expm1(-.5*excess),0.)
+
+
+class OpeningReversalRelease:
+    """Latch only the A-release reference at drop contact, independently of rebound history."""
+
+    def __init__(self, count, device):
+        self.pending = torch.zeros(count, dtype=torch.bool, device=device)
+        self.reference = torch.zeros(count, 2, device=device)
+        self.counts = torch.zeros(3, dtype=torch.long, device=device)
+
+    def reset(self, ids):
+        self.pending[ids] = False
+
+    def step(self, drop_contact, free_ascent, foot, target, edge, preview, velocity, flight, speed_limit, config):
+        desired = (target - foot) / flight[:, None]
+        desired *= (speed_limit / desired.norm(dim=-1, keepdim=True).clamp_min(1e-9)).clamp(max=1.)
+        self.reference.copy_(torch.where(drop_contact[:, None], desired, self.reference))
+        self.pending |= drop_contact
+        launch = self.pending & free_ascent
+        self.pending &= ~launch
+        loss = pre_reversal_loss(edge, preview, velocity, self.reference, flight, launch, config)
+        eligible = launch & pre_reversal_geometry(edge, preview)
+        full_reverse = (eligible & (edge.norm(dim=-1) >= .5 - 1e-6)
+                        & (preview.norm(dim=-1) >= .5 - 1e-6) & ((edge + preview).norm(dim=-1) < 1e-5))
+        self.counts += torch.stack((eligible.sum(), full_reverse.sum(), (full_reverse & (loss < 0)).sum()))
+        return loss
+
+    def metrics(self):
+        return dict(zip(('eligible', 'full_reverse', 'full_reverse_penalized'), self.counts.unbind()))
